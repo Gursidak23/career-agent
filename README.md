@@ -103,13 +103,24 @@ without sending).
 1. **Resume**: drop your PDF (re-uploading the same file reuses the saved parse
    instantly), pick a role and optionally paste a job description. The current
    score updates live; **Optimize** rewrites and re-scores. Past versions stay in
-   *History*.
-2. **Jobs**: fetch live postings, filter as you type, and use **Tailor resume**
-   (targets that posting) or **Draft outreach** on any job.
+   *History*. **Review the rewrites** lists every reworded line next to your
+   original: clean ones are applied, ones that add a technology the entry never
+   mentions or drop a number/name are held back with the reason. Tick or untick
+   each and **Apply choices** to re-score and re-render the PDF/DOCX.
+2. **Jobs**: fetch live postings and rank them against your resume (**match %**,
+   instant and AI-free: the share of skills a post names that your resume shows,
+   scaled down for posts that name few). Sort by best match, filter by minimum
+   match, see the skills you're missing, and spot **New** postings since your
+   last visit. **Track**, **Tailor resume** or **Draft outreach** on any job.
 3. **Outreach**: the job, your latest optimized resume (attached as
    `First_Last_Role_Resume.pdf`), your name and top quantified highlights are
    filled in. Generated emails use the job post as context and stay editable.
-   Do a test run first; real sending needs SMTP credentials.
+   Recruiters you've already emailed are skipped unless you tick *Allow
+   repeats*. Do a test run first; real sending needs SMTP credentials.
+4. **Tracker**: one card per job, Saved → Applied → Contacted → Replied →
+   Interview → Offer (or Rejected), with notes, the resume version you used and
+   emails sent. Tailoring for a job adds its card; a successful send moves it to
+   Contacted (never backwards).
 
 ## ATS scoring rubric (0–100)
 
@@ -138,6 +149,7 @@ Jobs page (default `all`) or via `POST /api/jobs/refresh` with `{"source": ...}`
 | `remoteok` | `remoteok.com/api` | Remote jobs with tags + salary. |
 | `arbeitnow` | `arbeitnow.com/api/job-board-api` | EU/remote job board. |
 | `hackernews` | HN "Ask HN: Who is hiring?" via the public Algolia API | Monthly YC-ecosystem thread; **many posts include a recruiter email**, parsed automatically. |
+| `companies` | Greenhouse, Lever and Ashby public job-board APIs | Openings straight from company career pages (Stripe, Databricks, Anthropic, OpenAI, Notion, CRED, Meesho, …), full descriptions and apply links. Filtered to tech roles; edit the list with `CAREER_SCRAPER__COMPANY_BOARDS`. Part of `all`. |
 | `apify` | Apify "New Job Posts Finder" actor | **Indian boards** — Naukri, Foundit (Monster India), Hirist, Indeed, Internshala, LinkedIn. Needs a free `CAREER_SCRAPER__APIFY_TOKEN`; not part of `all` (it's metered). |
 
 > **Instahyre / JobFound:** Instahyre has no public/keyless API (job data is
@@ -176,6 +188,13 @@ The adapter runs `scrapy crawl <spider> -O out.jsonl` and maps the items into
 job postings (see `app/outreach/scraper/scrapy_source.py` for the field
 mapping). Always respect each site's robots.txt, rate limits, and Terms of
 Service.
+
+### Scheduled fetching and a match digest
+
+Set `CAREER_SCRAPER__AUTO_REFRESH_HOURS` (e.g. `12`) to fetch new postings in the
+background while the backend runs. With `CAREER_SCRAPER__DIGEST_EMAIL` set (and
+SMTP configured), each run emails you the new postings that match your latest
+resume at least `CAREER_SCRAPER__DIGEST_MIN_MATCH` % (default 60).
 
 ## Email finder (recruiter/company email discovery)
 

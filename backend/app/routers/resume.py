@@ -9,24 +9,27 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import Resume, Tailoring
+from ..models import JobPosting, Resume, Tailoring
 from ..resume.ats import score_resume
 from ..resume.docx_render import render_docx
 from ..resume.latex import render_pdf
 from ..resume.naming import resume_filename
 from ..resume.parser import extract_text, pdf_layout, structure_resume
 from ..resume.roles import ROLES, get_role
-from ..resume.tailor import tailor_resume
+from ..resume.tailor import apply_reviews, tailor_resume
 from ..schemas import (
     AtsReport,
+    BulletReview,
     ResumeData,
     ResumeSummary,
+    ReviewDecision,
     ScoreRequest,
     TailoringSummary,
     TailorRequest,
     TailorResponse,
     UploadResponse,
 )
+from .applications import track
 
 router = APIRouter(prefix="/api/resume", tags=["resume"])
 
@@ -79,7 +82,20 @@ def _tailor_response(
         warning=warning,
         baseline_score=baseline,
         job_description=tailoring.job_description,
+        reviews=[BulletReview.model_validate(r) for r in tailoring.reviews or []],
     )
+
+
+def _render_files(tailoring: Tailoring, resume: ResumeData) -> None:
+    """(Re)write the PDF (or .tex without Tectonic) and the .docx for a tailoring."""
+    out_dir = get_settings().output_path
+    stem = f"resume_{tailoring.id}"
+    render = render_pdf(resume, out_dir, stem=stem)
+    try:
+        render_docx(resume, out_dir, stem=stem)
+    except Exception:  # noqa: BLE001, S110 - docx is a best-effort extra format
+        pass
+    tailoring.pdf_path = str(render.pdf_path) if render.pdf_path else str(render.tex_path)
 
 
 @router.get("/roles")
@@ -164,23 +180,21 @@ async def tailor(req: TailorRequest, db: Session = Depends(get_db)) -> TailorRes
         resume_id=resume.id,
         role=req.role,
         job_description=req.job_description,
+        job_id=req.job_id,
         tailored=result.resume.model_dump(),
         ats_score=result.report.score,
         ats_report=result.report.model_dump(),
+        reviews=[r.model_dump() for r in result.reviews],
     )
     db.add(tailoring)
     db.commit()
     db.refresh(tailoring)
 
-    # Render PDF (or .tex if Tectonic missing) and an ATS-friendly .docx.
-    out_dir = get_settings().output_path
-    stem = f"resume_{tailoring.id}"
-    render = render_pdf(result.resume, out_dir, stem=stem)
-    try:
-        render_docx(result.resume, out_dir, stem=stem)
-    except Exception:  # noqa: BLE001, S110 - docx is a best-effort extra format
-        pass
-    tailoring.pdf_path = str(render.pdf_path) if render.pdf_path else str(render.tex_path)
+    _render_files(tailoring, result.resume)
+    if req.job_id and db.get(JobPosting, req.job_id) is not None:
+        # Tailoring to a post means you're pursuing it: put it on the board with
+        # this (newest) resume version.
+        track(db, job_id=req.job_id).tailoring_id = tailoring.id
     db.commit()
 
     return _tailor_response(tailoring, iterations=result.iterations, warning=result.warning)
@@ -213,6 +227,29 @@ def get_tailoring(tailoring_id: int, db: Session = Depends(get_db)) -> TailorRes
     tailoring = db.get(Tailoring, tailoring_id)
     if tailoring is None:
         raise HTTPException(status_code=404, detail="Tailoring not found")
+    return _tailor_response(tailoring)
+
+
+@router.post("/tailorings/{tailoring_id}/review", response_model=TailorResponse)
+def apply_review(
+    tailoring_id: int, req: ReviewDecision, db: Session = Depends(get_db)
+) -> TailorResponse:
+    """Accept/reject each suggested rewrite, then re-score and re-render."""
+    tailoring = db.get(Tailoring, tailoring_id)
+    if tailoring is None:
+        raise HTTPException(status_code=404, detail="Tailoring not found")
+    reviews = [BulletReview.model_validate(r) for r in tailoring.reviews or []]
+    if len(req.applied) != len(reviews):
+        raise HTTPException(status_code=422, detail=f"Expected {len(reviews)} decisions")
+    reviews = [r.model_copy(update={"applied": a}) for r, a in zip(reviews, req.applied, strict=True)]
+    resume = apply_reviews(ResumeData.model_validate(tailoring.tailored or {}), reviews)
+    report = score_resume(resume, tailoring.role, tailoring.job_description)
+    tailoring.tailored = resume.model_dump()
+    tailoring.reviews = [r.model_dump() for r in reviews]
+    tailoring.ats_score = report.score
+    tailoring.ats_report = report.model_dump()
+    _render_files(tailoring, resume)
+    db.commit()
     return _tailor_response(tailoring)
 
 

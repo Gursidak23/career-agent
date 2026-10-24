@@ -93,6 +93,28 @@ class ScraperSettings(BaseModel):
     apify_mode: str = "deduplicated"
     apify_timeout_seconds: float = 120.0
 
+    # Company career boards (Greenhouse/Lever/Ashby public APIs), "provider:token"
+    # or "provider:token=Display Name". Defaults to well-known tech employers.
+    company_boards: list[str] = Field(
+        default_factory=lambda: [
+            "greenhouse:stripe", "greenhouse:databricks", "greenhouse:cloudflare",
+            "greenhouse:gitlab=GitLab", "greenhouse:figma", "greenhouse:coinbase",
+            "greenhouse:anthropic", "greenhouse:mongodb=MongoDB", "greenhouse:datadog",
+            "greenhouse:twilio", "greenhouse:elastic", "greenhouse:okta", "greenhouse:reddit",
+            "lever:palantir", "lever:spotify", "lever:cred=CRED", "lever:meesho", "lever:zeta",
+            "ashby:openai=OpenAI", "ashby:notion", "ashby:ramp", "ashby:linear",
+            "ashby:supabase", "ashby:replit",
+        ]
+    )
+
+    # Scheduled fetching: every N hours (0 = off) pull new jobs from this source.
+    auto_refresh_hours: float = 0.0
+    auto_refresh_source: str = "all"
+    # Email a digest of new well-matched jobs here after each scheduled fetch
+    # (needs SMTP). Matches are scored against your most recent resume.
+    digest_email: str | None = None
+    digest_min_match: int = 60
+
 
 class LinkedInSettings(BaseModel):
     """LinkedIn DM automation via Playwright with a persistent login session.

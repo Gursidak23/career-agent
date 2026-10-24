@@ -108,6 +108,17 @@ export interface TailoringSummary {
   job_snippet?: string | null;
 }
 
+export interface BulletReview {
+  section: "experience" | "projects" | "project_description" | "summary" | "headline";
+  entry: number;
+  index: number;
+  label: string;
+  original: string;
+  suggested: string;
+  flags: string[];
+  applied: boolean;
+}
+
 export interface TailorResponse {
   tailoring_id: number;
   resume_id: number;
@@ -120,6 +131,7 @@ export interface TailorResponse {
   warning?: string | null;
   baseline_score?: number | null;
   job_description?: string | null;
+  reviews?: BulletReview[];
 }
 
 export interface EmailLogOut {
@@ -159,6 +171,50 @@ export interface JobOut {
   recruiter_name?: string | null;
   recruiter_email?: string | null;
   description?: string | null;
+  created_at?: string | null;
+  match_score?: number | null;
+  match_matched?: string[];
+  match_missing?: string[];
+  application_id?: number | null;
+  application_status?: ApplicationStatus | null;
+  is_new?: boolean;
+}
+
+export const APPLICATION_STATUSES = [
+  "saved",
+  "applied",
+  "contacted",
+  "replied",
+  "interview",
+  "offer",
+  "rejected",
+] as const;
+export type ApplicationStatus = (typeof APPLICATION_STATUSES)[number];
+
+export interface ApplicationOut {
+  id: number;
+  created_at: string;
+  updated_at?: string | null;
+  job_id?: number | null;
+  company: string;
+  role: string;
+  url?: string | null;
+  location?: string | null;
+  status: ApplicationStatus;
+  tailoring_id?: number | null;
+  tailoring_score?: number | null;
+  recruiter_email?: string | null;
+  notes?: string | null;
+  applied_at?: string | null;
+  contacted_at?: string | null;
+  emails_sent: number;
+  last_emailed_at?: string | null;
+}
+
+export interface ContactHistory {
+  email: string;
+  count: number;
+  last_sent_at?: string | null;
 }
 
 export interface ProviderStatus {
@@ -181,6 +237,9 @@ export interface SettingsStatus {
   linkedin_enabled: boolean;
   linkedin_available: boolean;
   env_overrides?: string[];
+  company_boards?: number;
+  auto_refresh_hours?: number;
+  digest_email?: string | null;
 }
 
 export interface ConnectionTest {
@@ -233,6 +292,7 @@ export interface SendItem {
   company?: string;
   role?: string;
   tailoring_id?: number;
+  job_id?: number;
 }
 
 export interface BatchSendResponse {
@@ -303,7 +363,11 @@ export const api = {
     job_description?: string;
     target_score?: number;
     max_iterations?: number;
+    job_id?: number;
   }) => request<TailorResponse>("/api/resume/tailor", json(body)),
+
+  applyReview: (tailoringId: number, applied: boolean[]) =>
+    request<TailorResponse>(`/api/resume/tailorings/${tailoringId}/review`, json({ applied })),
 
   tailorings: (resumeId?: number) =>
     request<TailoringSummary[]>(
@@ -334,8 +398,35 @@ export const api = {
       json(body)
     ),
 
-  sendBatch: (items: SendItem[], dryRun: boolean) =>
-    request<BatchSendResponse>("/api/outreach/send", json({ items, dry_run: dryRun })),
+  sendBatch: (items: SendItem[], dryRun: boolean, allowRepeat = false) =>
+    request<BatchSendResponse>(
+      "/api/outreach/send",
+      json({ items, dry_run: dryRun, allow_repeat: allowRepeat })
+    ),
+
+  contacted: (email: string) =>
+    request<ContactHistory>(`/api/outreach/contacted?email=${encodeURIComponent(email)}`),
+
+  applications: () => request<ApplicationOut[]>("/api/applications"),
+  createApplication: (body: {
+    job_id?: number;
+    company?: string;
+    role?: string;
+    url?: string;
+    status?: ApplicationStatus;
+    notes?: string;
+  }) => request<ApplicationOut>("/api/applications", json(body)),
+  updateApplication: (
+    id: number,
+    body: { status?: ApplicationStatus; notes?: string; recruiter_email?: string }
+  ) =>
+    request<ApplicationOut>(`/api/applications/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteApplication: (id: number) =>
+    request<{ ok: boolean }>(`/api/applications/${id}`, { method: "DELETE" }),
 
   sends: (limit = 50) => request<EmailLogOut[]>(`/api/outreach/sends?limit=${limit}`),
 
@@ -343,6 +434,8 @@ export const api = {
     request<{ sources: string[]; job_types: string[]; experience_levels: string[] }>(
       "/api/jobs/meta"
     ),
+
+  job: (id: number) => request<JobOut>(`/api/jobs/${id}`),
 
   listJobs: (params: Record<string, string>) =>
     request<JobOut[]>(`/api/jobs?${new URLSearchParams(params).toString()}`),

@@ -7,11 +7,13 @@ import Jobs from "./pages/Jobs";
 import Outreach from "./pages/Outreach";
 import ResumeOptimizer from "./pages/ResumeOptimizer";
 import Settings from "./pages/Settings";
+import Tracker from "./pages/Tracker";
 
 const NAV: { to: string; label: string; icon: IconName; step?: number }[] = [
   { to: "/resume", label: "Resume", icon: "resume", step: 1 },
   { to: "/jobs", label: "Jobs", icon: "jobs", step: 2 },
   { to: "/outreach", label: "Outreach", icon: "outreach", step: 3 },
+  { to: "/tracker", label: "Tracker", icon: "history", step: 4 },
   { to: "/settings", label: "Settings", icon: "settings" },
 ];
 
@@ -77,6 +79,7 @@ export default function App() {
             <Route path="/resume" element={<ResumeOptimizer />} />
             <Route path="/jobs" element={<Jobs />} />
             <Route path="/outreach" element={<Outreach status={status} />} />
+            <Route path="/tracker" element={<Tracker />} />
             <Route path="/settings" element={<Settings onStatus={setStatus} />} />
             <Route path="*" element={<Navigate to="/resume" replace />} />
           </Routes>

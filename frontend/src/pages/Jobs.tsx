@@ -1,9 +1,33 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { api, errorMessage, type JobOut } from "../api/client";
+import { Link, useNavigate } from "react-router-dom";
+import { api, errorMessage, type JobOut, type ResumeSummary } from "../api/client";
 import { useToast } from "../components/Toast";
 import { EmptyState, Icon, Spinner } from "../components/ui";
-import { useDebounced, usePersistentState } from "../lib/hooks";
+import { formatDate, titleCase, useDebounced, usePersistentState } from "../lib/hooks";
+
+// Read once per visit: jobs added after this are flagged "New".
+function useLastVisit(key: string): number {
+  const [previous] = useState(() => {
+    try {
+      return Number(localStorage.getItem(key) || 0);
+    } catch {
+      return 0;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, String(Date.now()));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [key]);
+  return previous;
+}
+
+const toMs = (iso?: string | null) =>
+  iso ? new Date(iso.endsWith("Z") || iso.includes("+") ? iso : `${iso}Z`).getTime() : 0;
+
+const matchTone = (score: number) => (score >= 60 ? "good" : score >= 35 ? "mid" : "low");
 
 const pretty = (s?: string | null) =>
   s ? s.replace(/_/g, "-").replace(/^\w/, (c) => c.toUpperCase()) : "";
@@ -14,6 +38,7 @@ const SOURCE_HINTS: Record<string, string> = {
   remoteok: "Remote jobs with salaries",
   arbeitnow: "EU and remote jobs",
   hackernews: "HN Who's Hiring (often has emails)",
+  companies: "Company career pages (Greenhouse, Lever, Ashby)",
   apify: "Indian job boards (needs Apify token)",
   scrapy: "Custom Scrapy spider",
 };
@@ -37,11 +62,25 @@ export default function Jobs() {
   const [finding, setFinding] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
   const pollRef = useRef<number | null>(null);
+  const [resumes, setResumes] = useState<ResumeSummary[]>([]);
+  const [rankWith, setRankWith] = usePersistentState<number | null>("ca.resumeId", null);
+  const [sort, setSort] = usePersistentState<"match" | "newest">("ca.jobSort", "match");
+  const [minMatch, setMinMatch] = usePersistentState("ca.jobMinMatch", 0);
+  const [tracking, setTracking] = useState<number | null>(null);
+  const lastVisit = useLastVisit("ca.jobsSeenAt");
 
   const debouncedFilters = useDebounced(filters, 300);
 
   useEffect(() => {
     api.jobsMeta().then(setMeta).catch((e) => toast.err(errorMessage(e)));
+    api
+      .resumes()
+      .then((rows) => {
+        const complete = rows.filter((r) => r.complete);
+        setResumes(complete);
+        if (!complete.some((r) => r.id === rankWith)) setRankWith(complete[0]?.id ?? null);
+      })
+      .catch(() => {});
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
     };
@@ -51,11 +90,16 @@ export default function Jobs() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedFilters]);
+  }, [debouncedFilters, rankWith, sort, minMatch]);
 
   async function load() {
     const params: Record<string, string> = {};
     Object.entries(filters).forEach(([k, v]) => v && (params[k] = v));
+    if (rankWith) {
+      params.resume_id = String(rankWith);
+      params.sort = sort;
+      if (minMatch) params.min_match = String(minMatch);
+    }
     try {
       setJobs(await api.listJobs(params));
     } catch (e) {
@@ -116,6 +160,21 @@ export default function Jobs() {
       toast.err(errorMessage(e));
     } finally {
       setFinding(null);
+    }
+  }
+
+  async function track(job: JobOut) {
+    setTracking(job.id);
+    try {
+      const app = await api.createApplication({ job_id: job.id });
+      setJobs((prev) =>
+        prev.map((j) => (j.id === job.id ? { ...j, application_id: app.id, application_status: app.status } : j))
+      );
+      toast.ok(`Tracking ${job.title} at ${job.company}.`);
+    } catch (e) {
+      toast.err(errorMessage(e));
+    } finally {
+      setTracking(null);
     }
   }
 
@@ -210,6 +269,43 @@ export default function Jobs() {
       </div>
 
       <div className="card">
+        <div className="row">
+          <div className="field" style={{ flex: "2 1 220px" }}>
+            <label htmlFor="rank">Rank against</label>
+            <select id="rank" value={rankWith ?? ""} onChange={(e) => setRankWith(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">No ranking</option>
+              {resumes.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {titleCase(r.name) || r.filename} · {r.filename} · {formatDate(r.created_at)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="sort">Sort by</label>
+            <select id="sort" value={sort} onChange={(e) => setSort(e.target.value as "match" | "newest")} disabled={!rankWith}>
+              <option value="match">Best match</option>
+              <option value="newest">Newest</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="minmatch">Match</label>
+            <select id="minmatch" value={minMatch} onChange={(e) => setMinMatch(Number(e.target.value))} disabled={!rankWith}>
+              <option value={0}>Any</option>
+              <option value={40}>40%+</option>
+              <option value={60}>60%+</option>
+              <option value={80}>80%+</option>
+            </select>
+          </div>
+        </div>
+        {!resumes.length && (
+          <div className="hint" style={{ marginTop: 8 }}>
+            <Link to="/resume">Upload your resume</Link> to rank jobs by how well they fit you.
+          </div>
+        )}
+      </div>
+
+      <div className="card">
         <div className="card-header">
           <h2>
             {jobs.length} job{jobs.length === 1 ? "" : "s"}
@@ -234,7 +330,20 @@ export default function Jobs() {
         {jobs.map((j) => (
           <div className="job" key={j.id}>
             <div className="job-top">
+              {j.match_score != null && (
+                <span
+                  className={`match ${matchTone(j.match_score)}`}
+                  title={`Matches ${j.match_matched?.join(", ") || "none"}${
+                    j.match_missing?.length ? `\nMissing ${j.match_missing.join(", ")}` : ""
+                  }`}
+                >
+                  {j.match_score}%
+                </span>
+              )}
               <div className="job-main">
+                {(j.is_new || toMs(j.created_at) > lastVisit) && lastVisit > 0 && (
+                  <span className="badge new" style={{ marginRight: 8 }}>New</span>
+                )}
                 {j.url ? (
                   <a className="job-title" href={j.url} target="_blank" rel="noreferrer">
                     {j.title} <Icon name="external" size={13} />
@@ -249,6 +358,12 @@ export default function Jobs() {
                   {j.experience && <span className="badge">{pretty(j.experience)}</span>}
                   <span className="badge accent">{j.source}</span>
                 </div>
+                {!!j.match_missing?.length && (j.match_score ?? 0) > 0 && (
+                  <div className="hint" style={{ marginTop: 4 }}>
+                    Missing: {j.match_missing.slice(0, 4).join(", ")}
+                    {j.match_missing.length > 4 ? ` +${j.match_missing.length - 4}` : ""}
+                  </div>
+                )}
                 <div className="job-meta">
                   {j.recruiter_email ? (
                     <span className="inline" style={{ gap: 5 }}>
@@ -268,6 +383,15 @@ export default function Jobs() {
                 </div>
               </div>
               <div className="job-actions">
+                {j.application_status ? (
+                  <Link to="/tracker" className="badge ok" style={{ alignSelf: "center" }} title="Open the tracker">
+                    {j.application_status}
+                  </Link>
+                ) : (
+                  <button className="secondary sm" onClick={() => track(j)} disabled={tracking === j.id}>
+                    {tracking === j.id ? <Spinner size={12} /> : <Icon name="check" size={14} />} Track
+                  </button>
+                )}
                 <button className="secondary sm" onClick={() => nav("/resume", { state: { job: j } })} title="Tailor your resume to this job's description">
                   <Icon name="sparkle" size={15} /> Tailor resume
                 </button>

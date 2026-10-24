@@ -6,9 +6,12 @@ still contribute. Results are de-duped on (company, title).
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from ...logging_setup import get_logger
 from .arbeitnow import ArbeitnowSource
 from .base import JobRecord
+from .company_boards import CompanyBoardsSource
 from .hackernews import HackerNewsSource
 from .remoteok import RemoteOkSource
 from .remotive import RemotiveSource
@@ -25,6 +28,7 @@ class AggregateSource:
             RemoteOkSource(),
             ArbeitnowSource(),
             HackerNewsSource(),
+            CompanyBoardsSource(),
         ]
 
     def fetch(
@@ -40,11 +44,19 @@ class AggregateSource:
         merged: list[JobRecord] = []
         errors: list[str] = []
 
-        for source in self._sources:
+        def run(source) -> list[JobRecord] | str:
             try:
-                records = source.fetch(query=query, location=location, limit=per_source)
+                return source.fetch(query=query, location=location, limit=per_source)
             except RuntimeError as exc:
-                errors.append(f"{source.name}: {exc}")
+                return f"{source.name}: {exc}"
+
+        # Sources are independent network calls; fetch them concurrently.
+        with ThreadPoolExecutor(max_workers=len(self._sources)) as pool:
+            results = list(pool.map(run, self._sources))
+
+        for records in results:
+            if isinstance(records, str):
+                errors.append(records)
                 continue
             for rec in records:
                 key = (rec.company.strip().lower(), rec.title.strip().lower())

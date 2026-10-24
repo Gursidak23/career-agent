@@ -58,6 +58,23 @@ def _norm(*parts: object) -> str:
     return " ".join(str(p) for p in parts if p).lower()
 
 
+_TECH_TITLE = re.compile(
+    r"engineer|developer|scientist|programmer|architect|devops|\bswe\b|\bsre\b|"
+    r"data analyst",
+    re.IGNORECASE,
+)
+_NON_TECH_TITLE = re.compile(
+    r"\b(sales|account|solutions?|support|customer|field|recruit\w*|marketing|legal|"
+    r"finance|partner|talent|business development)\b",
+    re.IGNORECASE,
+)
+
+
+def is_tech_role(title: str) -> bool:
+    """Engineering/data/ML roles; excludes sales-, support- and solutions-type titles."""
+    return bool(_TECH_TITLE.search(title)) and not _NON_TECH_TITLE.search(title)
+
+
 def infer_role_category(title: str, tags: list[str] | None = None, description: str = "") -> str:
     haystack_title = _norm(title, " ".join(tags or []))
     # Title/tags are the strongest signal; check specific roles before the generic
@@ -80,28 +97,48 @@ def infer_role_category(title: str, tags: list[str] | None = None, description: 
     return "software_developer"
 
 
+def _has_word(keyword: str, text: str) -> bool:
+    # Whole-word match: "intern" must not match "internal", nor "lead" "leading".
+    return re.search(r"(?<![a-z])" + re.escape(keyword.strip()) + r"(?![a-z])", text) is not None
+
+
+_YEARS = re.compile(r"(\d{1,2})\s*\+?\s*(?:-\s*\d{1,2}\s*)?(?:years|yrs)", re.IGNORECASE)
+
+
 def infer_experience(title: str, description: str = "") -> str:
+    """Seniority from the title; else from an explicit "N+ years" requirement.
+
+    Descriptions are not keyword-scanned: words like "lead" or "senior" appear
+    there as verbs and team descriptions ("you'll lead...", "senior leadership").
+    """
     text = _norm(title)
     for level, keywords in _EXPERIENCE_KEYWORDS:
-        if any(k in text for k in keywords):
+        if any(_has_word(k, text) for k in keywords):
             return level
-    # Fall back to scanning the description for explicit seniority cues.
-    dtext = description.lower()
-    for level, keywords in _EXPERIENCE_KEYWORDS:
-        if any(k in dtext for k in keywords):
-            return level
+    years = [int(y) for y in _YEARS.findall(description or "") if int(y) <= 20]
+    if years:
+        y = min(years)
+        return "junior" if y <= 1 else "mid" if y <= 4 else "senior" if y <= 7 else "lead"
     return "mid"
 
 
 def normalize_job_type(raw: str | None, *, title: str = "", description: str = "") -> str:
+    """From the source's own field, then the title, then (cautiously) the description."""
     if raw:
-        r = raw.lower().replace("_", " ").replace("-", " ")
+        # "FullTime" (Ashby) -> "full time"
+        r = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", raw).lower().replace("_", " ").replace("-", " ")
         for canonical, keywords in _JOB_TYPE_KEYWORDS:
-            if any(k in r for k in keywords):
+            if any(_has_word(k, r) for k in keywords):
                 return canonical
-    text = _norm(title, description)
     for canonical, keywords in _JOB_TYPE_KEYWORDS:
-        if any(k in text for k in keywords):
+        if any(_has_word(k, _norm(title)) for k in keywords):
+            return canonical
+    # Descriptions mention interns and contractors in passing ("mentor interns",
+    # "work with contractors"), so only the explicit employment-type phrases count.
+    desc = (description or "").lower()
+    for canonical, phrase in (("part_time", "part-time"), ("part_time", "part time"), ("contract", "contract role"),
+                              ("contract", "contract position"), ("freelance", "freelance")):
+        if phrase in desc:
             return canonical
     return "full_time"
 
@@ -127,4 +164,5 @@ __all__ = [
     "infer_experience",
     "normalize_job_type",
     "clean_html",
+    "is_tech_role",
 ]

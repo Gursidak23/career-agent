@@ -4,6 +4,7 @@ import {
   api,
   errorMessage,
   type AtsReport,
+  type BulletReview,
   type JobOut,
   type ResumeData,
   type ResumeSummary,
@@ -141,6 +142,7 @@ export default function ResumeOptimizer() {
         resume_id: resume.resume_id,
         role,
         job_description: jd.trim() || undefined,
+        job_id: targetJob?.id || undefined,
       });
       setResult(res);
       setLastTailoringId(res.tailoring_id);
@@ -426,6 +428,21 @@ export default function ResumeOptimizer() {
                 </button>
               </div>
 
+              {!!result.reviews?.length && (
+                <ReviewCard
+                  key={result.tailoring_id}
+                  reviews={result.reviews}
+                  onApply={async (applied) => {
+                    try {
+                      const res = await api.applyReview(result.tailoring_id, applied);
+                      setResult(res);
+                      toast.ok(`Saved your choices: ATS score ${Math.round(res.ats.score)}. Downloads updated.`);
+                    } catch (e) {
+                      toast.err(errorMessage(e));
+                    }
+                  }}
+                />
+              )}
               {resume && <ChangesView before={resume.parsed} after={result.tailored} />}
               <ResumePreview data={result.tailored} />
             </>
@@ -479,6 +496,83 @@ export default function ResumeOptimizer() {
           )}
         </aside>
       </div>
+    </div>
+  );
+}
+
+const SECTION_NAMES: Record<BulletReview["section"], string> = {
+  experience: "Experience",
+  projects: "Project",
+  project_description: "Project description",
+  summary: "Summary",
+  headline: "Headline",
+};
+
+/** Accept or reject each AI rewrite; held-back ones explain why. */
+function ReviewCard({
+  reviews,
+  onApply,
+}: {
+  reviews: BulletReview[];
+  onApply: (applied: boolean[]) => Promise<void>;
+}) {
+  const initial = reviews.map((r) => r.applied);
+  const [applied, setApplied] = useState<boolean[]>(initial);
+  const [saving, setSaving] = useState(false);
+  const dirty = applied.some((a, i) => a !== initial[i]);
+  const held = reviews.filter((r) => r.flags.length).length;
+
+  async function save() {
+    setSaving(true);
+    try {
+      await onApply(applied);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div>
+          <h2>Review the rewrites</h2>
+          <div className="hint">
+            {applied.filter(Boolean).length} of {reviews.length} in use
+            {held ? ` · ${held} held back because they add or drop facts. Accept only if true.` : ""}
+          </div>
+        </div>
+        <div className="inline">
+          <button className="ghost sm" onClick={() => setApplied(reviews.map(() => false))} disabled={saving}>
+            Keep all original
+          </button>
+          <button className="sm" onClick={save} disabled={!dirty || saving}>
+            {saving ? <Spinner /> : null} Apply choices
+          </button>
+        </div>
+      </div>
+      {reviews.map((r, i) => (
+        <label key={i} className={`review-item ${applied[i] ? "" : "off"}`}>
+          <input
+            type="checkbox"
+            checked={applied[i]}
+            onChange={(e) => setApplied(applied.map((a, j) => (j === i ? e.target.checked : a)))}
+            aria-label={`Use the rewrite for ${r.label}`}
+          />
+          <div style={{ minWidth: 0 }}>
+            <div className="hint">
+              {SECTION_NAMES[r.section]}
+              {r.section !== "summary" && r.section !== "headline" ? ` · ${r.label}` : ""}
+            </div>
+            <div className="was">{r.original}</div>
+            <div className="now">{r.suggested}</div>
+            {r.flags.map((f) => (
+              <span key={f} className="badge warn" style={{ marginTop: 6, whiteSpace: "normal" }}>
+                {f}
+              </span>
+            ))}
+          </div>
+        </label>
+      ))}
     </div>
   );
 }

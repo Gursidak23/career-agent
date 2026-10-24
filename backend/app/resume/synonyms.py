@@ -10,6 +10,7 @@ from __future__ import annotations
 _SYNONYMS: dict[str, list[str]] = {
     "javascript": ["js", "ecmascript", "es6", "vanilla js"],
     "typescript": ["ts"],
+    "go": ["golang"],
     "python": ["py"],
     "machine learning": ["ml"],
     "deep learning": ["dl"],

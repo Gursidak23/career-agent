@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,10 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings, shadowed_env_vars
 from .db import init_db
 from .llm.router import aclose_llm
+from .outreach.job_feed import scheduler_loop
 from .logging_setup import get_logger
 
 log = get_logger(__name__)
-from .routers import email, jobs, linkedin, outreach, resume, settings
+from .routers import applications, email, jobs, linkedin, outreach, resume, settings
 
 
 @asynccontextmanager
@@ -26,7 +29,14 @@ async def lifespan(app: FastAPI):
             "Unset them or start the backend from a fresh terminal.",
             ", ".join(stale),
         )
+    scheduler = None
+    if get_settings().scraper.auto_refresh_hours > 0:
+        scheduler = asyncio.create_task(scheduler_loop())
     yield
+    if scheduler is not None:
+        scheduler.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await scheduler
     await aclose_llm()
 
 
@@ -50,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(email.router)
     app.include_router(linkedin.router)
     app.include_router(settings.router)
+    app.include_router(applications.router)
 
     @app.get("/health")
     def health() -> dict[str, str]:

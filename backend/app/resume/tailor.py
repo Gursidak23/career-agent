@@ -8,15 +8,14 @@ scoring version and stop once the target score is reached or iterations run out.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 from ..config import get_settings
 from ..llm import LlmError
 from ..llm.router import complete_json
 from ..logging_setup import get_logger
-from ..schemas import AtsReport, ResumeData
-import re
-
+from ..schemas import AtsReport, BulletReview, ResumeData
 from .ats import CANONICAL, mentions, resume_text, score_resume, target_keywords, unsupported_terms
 from .parser import SCHEMA_HINT
 from .roles import get_role
@@ -60,6 +59,8 @@ class TailorResult:
     iterations: int
     # Set when the LLM produced nothing usable, i.e. the resume was not rewritten.
     warning: str | None = None
+    # Line-by-line suggestions of the best candidate (applied or held back).
+    reviews: list[BulletReview] = field(default_factory=list)
 
 
 def _build_user_prompt(
@@ -100,10 +101,22 @@ CURRENT RESUME JSON:
 _AMBIGUOUS = {"express", "spark", "swift", "react", "dart", "rust", "flask"}
 
 
+def _is_name(term: str) -> bool:
+    """A product/tech name (PostgreSQL, LangGraph, ONNX, C++), not a title-cased word.
+
+    Skill lists capitalize ordinary words ("Reranking", "Hybrid Search"); forcing
+    that casing into prose ("..., Reranking the top 6") would be wrong.
+    """
+    return any(
+        any(c.isupper() for c in w[1:]) or not w.isalpha() or (len(w) > 1 and w.isupper())
+        for w in term.split()
+    )
+
+
 def _casing_map(original: ResumeData) -> dict[str, str]:
-    """lowercase -> preferred casing; the candidate's own spelling wins over defaults."""
+    """lowercase -> preferred casing; the candidate's own spelling of names wins."""
     canon = dict(CANONICAL)
-    canon.update({s.lower(): s for s in original.skills})
+    canon.update({s.lower(): s for s in original.skills if _is_name(s)})
     return {k: v for k, v in canon.items() if len(k) > 2 and k != v and k not in _AMBIGUOUS}
 
 
@@ -123,31 +136,36 @@ _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 _NAME = re.compile(r"\b(?:[A-Za-z]*[a-z][A-Z]\w*|[A-Z]{2,}[A-Za-z0-9]*)\b")
 
 
-def _keeps_facts(new: str, old: str) -> bool:
-    """A rewrite must keep every number and distinctive name of the original line."""
+def _lost_facts(new: str, old: str) -> list[str]:
+    """Numbers and distinctive names of the original line that the rewrite dropped."""
     new_numbers = set(_NUMBER.findall(new))
     new_names = {n.lower() for n in _NAME.findall(new)}
-    return set(_NUMBER.findall(old)) <= new_numbers and {
-        n.lower() for n in _NAME.findall(old)
-    } <= new_names
+    lost = [n for n in dict.fromkeys(_NUMBER.findall(old)) if n not in new_numbers]
+    lost += [n for n in dict.fromkeys(_NAME.findall(old)) if n.lower() not in new_names]
+    return lost
 
 
 def _key(text: str) -> str:
     return "".join(ch for ch in text.lower() if ch.isalnum())
 
 
-def lock_facts(original: ResumeData, candidate: ResumeData) -> ResumeData:
-    """Keep everything that must not change from the original; take only rewrites.
+def lock_facts(original: ResumeData, candidate: ResumeData) -> tuple[ResumeData, list[BulletReview]]:
+    """Keep everything that must not change from the original; take only clean rewrites.
 
     The LLM may reword bullets, the summary, the headline and skills, but employers,
     titles, dates, contact details, education, certifications, links, extra sections
     and the section order always come from the original, whatever the model returns.
-    A skill the model adds survives only if the original resume already mentions it,
-    and technology names keep their proper casing.
+    Skills (and project tech) the model adds survive only if the original already
+    mentions them, and technology names keep their proper casing.
+
+    Every reworded line is returned as a BulletReview. Clean ones are applied; ones
+    that add technologies the original never mentions, or drop a number or name,
+    are held back with the reason, for the user to accept or reject.
     """
     casing = _casing_map(original)
     evidence = resume_text(original).lower()
     known = {s.lower() for s in original.skills}
+    reviews: list[BulletReview] = []
 
     def truthful(skills: list[str]) -> list[str]:
         seen: set[str] = set()
@@ -159,22 +177,36 @@ def lock_facts(original: ResumeData, candidate: ResumeData) -> ResumeData:
                 out.append(s)
         return out
 
-    def honest(new: str | None, old: str | None, scope: str = evidence) -> str | None:
-        """The rewrite, unless it claims technologies outside `scope` or drops facts."""
-        if not new:
+    def review(section: str, entry: int, index: int, label: str, new: str | None, old: str | None, scope: str) -> str | None:
+        """Record a reworded line; return the text to use (the rewrite only if clean)."""
+        if not new or not old:
             return old
-        new = _recase(new, casing)
-        if old and (unsupported_terms(new.lower(), old.lower(), scope) or not _keeps_facts(new, old)):
+        new = _recase(new.strip(), casing)
+        if new == old:
             return old
-        return new
+        flags = []
+        terms = unsupported_terms(new.lower(), old.lower(), scope)
+        if terms:
+            flags.append("Adds " + ", ".join(CANONICAL.get(t, t) for t in terms) + ", not in your original")
+        lost = _lost_facts(new, old)
+        if lost:
+            flags.append("Drops " + ", ".join(lost))
+        reviews.append(
+            BulletReview(
+                section=section, entry=entry, index=index, label=label,
+                original=old, suggested=new, flags=flags, applied=not flags,
+            )
+        )
+        return old if flags else new
 
-    def rewrite_bullets(new: list[str], old: list[str], scope: str) -> list[str]:
-        """Bullets may only mention technologies their own entry already mentions."""
-        if not new:
-            return old
+    def bullets(section: str, entry: int, label: str, new: list[str], old: list[str], scope: str) -> list[str]:
+        """Bullets may only mention technologies their own entry already mentions.
+
+        A changed bullet count breaks the original layout, so it is ignored.
+        """
         if len(new) != len(old):
-            return [b for b in new if not unsupported_terms(b.lower(), scope, scope)] or old
-        return [honest(n, o, scope) or o for n, o in zip(new, old, strict=True)]
+            return old
+        return [review(section, entry, j, label, n, o, scope) or o for j, (n, o) in enumerate(zip(new, old, strict=True))]
 
     exp_by_company = {_key(e.company): e for e in candidate.experience}
     experience = []
@@ -183,8 +215,11 @@ def lock_facts(original: ResumeData, candidate: ResumeData) -> ResumeData:
         if new is None and len(candidate.experience) == len(original.experience):
             new = candidate.experience[i]
         scope = " ".join([orig.title, orig.company, *orig.bullets]).lower()
-        bullets = rewrite_bullets(new.bullets if new else [], orig.bullets, scope)
-        experience.append(orig.model_copy(update={"bullets": bullets}))
+        experience.append(
+            orig.model_copy(
+                update={"bullets": bullets("experience", i, orig.company, new.bullets if new else [], orig.bullets, scope)}
+            )
+        )
 
     proj_by_name = {_key(p.name): p for p in candidate.projects}
     projects = []
@@ -192,18 +227,16 @@ def lock_facts(original: ResumeData, candidate: ResumeData) -> ResumeData:
         new = proj_by_name.get(_key(orig.name))
         if new is None and len(candidate.projects) == len(original.projects):
             new = candidate.projects[i]
+        scope = " ".join([orig.name, orig.description or "", *orig.tech, *orig.bullets]).lower()
+        label = orig.name.split(":")[0]
         projects.append(
             orig.model_copy(
                 update={
-                    "bullets": rewrite_bullets(
-                        new.bullets if new else [],
-                        orig.bullets,
-                        " ".join([orig.name, orig.description or "", *orig.tech, *orig.bullets]).lower(),
+                    "bullets": bullets("projects", i, label, new.bullets if new else [], orig.bullets, scope),
+                    "description": review(
+                        "project_description", i, 0, label, new.description if new else None, orig.description, scope
                     ),
-                    "description": honest(new.description if new else None, orig.description)
-                    if orig.description
-                    else None,
-                    "tech": new.tech if new and new.tech and orig.tech else orig.tech,
+                    "tech": (truthful(new.tech) if new and orig.tech else []) or orig.tech,
                 }
             )
         )
@@ -218,14 +251,10 @@ def lock_facts(original: ResumeData, candidate: ResumeData) -> ResumeData:
             for g in original.skill_groups
         ]
 
-    contact = original.contact.model_copy(
-        update={"headline": honest(candidate.contact.headline, original.contact.headline)}
-        if original.contact.headline
-        else {}
-    )
-    return ResumeData(
-        contact=contact,
-        summary=honest(candidate.summary, original.summary) if original.summary else None,
+    headline = review("headline", 0, 0, "Headline", candidate.contact.headline, original.contact.headline, evidence)
+    locked = ResumeData(
+        contact=original.contact.model_copy(update={"headline": headline}),
+        summary=review("summary", 0, 0, "Summary", candidate.summary, original.summary, evidence),
         # With groups, the flat list is rebuilt from them; extras must still be truthful.
         skills=[] if groups else (truthful(candidate.skills) or original.skills),
         skill_groups=groups,
@@ -237,19 +266,41 @@ def lock_facts(original: ResumeData, candidate: ResumeData) -> ResumeData:
         section_order=original.section_order,
         layout=original.layout,
     )
+    return locked, reviews
+
+
+def apply_reviews(resume: ResumeData, reviews: list[BulletReview]) -> ResumeData:
+    """Set each reviewed line to its suggestion (if applied) or the original."""
+    out = resume.model_copy(deep=True)
+    for r in reviews:
+        text = r.suggested if r.applied else r.original
+        if r.section == "experience" and r.entry < len(out.experience) and r.index < len(out.experience[r.entry].bullets):
+            out.experience[r.entry].bullets[r.index] = text
+        elif r.section == "projects" and r.entry < len(out.projects) and r.index < len(out.projects[r.entry].bullets):
+            out.projects[r.entry].bullets[r.index] = text
+        elif r.section == "project_description" and r.entry < len(out.projects):
+            out.projects[r.entry].description = text
+        elif r.section == "summary":
+            out.summary = text
+        elif r.section == "headline":
+            out.contact.headline = text
+    return out
+
+
+Candidate = tuple[ResumeData, AtsReport, list[BulletReview]]
 
 
 async def _one_candidate(
     prompt: str, temperature: float, role: str, job_description: str | None, original: ResumeData
-) -> tuple[ResumeData, AtsReport] | str:
+) -> Candidate | str:
     """Generate and score a single tailored candidate; the error message on failure."""
     try:
         data = await complete_json(_TAILOR_SYSTEM, prompt, temperature=temperature, max_tokens=8192)
-        candidate = lock_facts(original, ResumeData.model_validate(data))
+        candidate, reviews = lock_facts(original, ResumeData.model_validate(data))
     except (LlmError, ValueError, TypeError) as exc:
         log.warning("tailoring candidate failed: %s", exc)
         return str(exc)
-    return candidate, score_resume(candidate, role, job_description)
+    return candidate, score_resume(candidate, role, job_description), reviews
 
 
 async def tailor_resume(
@@ -275,6 +326,10 @@ async def tailor_resume(
 
     current = resume
     current_report = best_report
+    best_reviews: list[BulletReview] = []
+    # Highest-scoring candidate even if it doesn't beat the original: its
+    # suggestions are still worth showing.
+    top: Candidate | None = None
     warning: str | None = None
     for _ in range(max(1, max_iterations)):
         iterations += 1
@@ -287,7 +342,7 @@ async def tailor_resume(
         results = await asyncio.gather(
             *(_one_candidate(prompt, t, role, job_description, resume) for t in temps)
         )
-        round_best: tuple[ResumeData, AtsReport] | None = None
+        round_best: Candidate | None = None
         for res in results:
             if isinstance(res, str):
                 continue
@@ -303,11 +358,16 @@ async def tailor_resume(
                 )
             break
 
-        candidate, candidate_report = round_best
+        candidate, candidate_report, reviews = round_best
+        if top is None or candidate_report.score > top[1].score:
+            top = round_best
         if candidate_report.score > best_report.score:
-            best, best_report = candidate, candidate_report
+            best, best_report, best_reviews = candidate, candidate_report, reviews
         current, current_report = candidate, candidate_report
         if best_report.score >= target_score:
             break
 
-    return TailorResult(best, best_report, iterations, warning)
+    if best is resume and top is not None:
+        # Nothing beat the original: keep it, but offer the suggestions unapplied.
+        best_reviews = [r.model_copy(update={"applied": False}) for r in top[2]]
+    return TailorResult(best, best_report, iterations, warning, best_reviews)

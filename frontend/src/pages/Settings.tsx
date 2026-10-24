@@ -189,6 +189,8 @@ export default function Settings({ onStatus }: { onStatus: (s: SettingsStatus) =
             </div>
           )}
           <p className="hint" style={{ marginBottom: 0 }}>
+            Schedule and digest: CAREER_SCRAPER__AUTO_REFRESH_HOURS and CAREER_SCRAPER__DIGEST_EMAIL.
+            <br />
             Gmail: Google Account → Security → 2-Step Verification → App passwords.
           </p>
         </div>
@@ -204,6 +206,22 @@ export default function Settings({ onStatus }: { onStatus: (s: SettingsStatus) =
               <span>LinkedIn DM automation</span>
               <span className={`badge ${status.linkedin_enabled && status.linkedin_available ? "ok" : ""}`}>
                 {status.linkedin_available ? (status.linkedin_enabled ? "enabled" : "disabled") : "Playwright missing"}
+              </span>
+            </div>
+            <div className="spread">
+              <span>Company career boards</span>
+              <span className="badge ok">{status.company_boards ?? 0} companies</span>
+            </div>
+            <div className="spread">
+              <span>Scheduled job fetch</span>
+              <span className={`badge ${status.auto_refresh_hours ? "ok" : ""}`}>
+                {status.auto_refresh_hours ? `every ${status.auto_refresh_hours}h` : "off"}
+              </span>
+            </div>
+            <div className="spread">
+              <span>Daily match digest</span>
+              <span className={`badge ${status.digest_email && status.smtp_configured ? "ok" : ""}`}>
+                {status.digest_email ? (status.smtp_configured ? status.digest_email : "needs SMTP") : "off"}
               </span>
             </div>
             {status.email_providers.map((p) => (

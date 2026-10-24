@@ -48,6 +48,7 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
   const [messages, setMessages] = usePersistentState<GeneratedMessage[]>("ca.outreachMessages", []);
   const [queue, setQueue] = usePersistentState<SendItem[]>("ca.emailQueue", []);
   const [dryRun, setDryRun] = useState(true);
+  const [allowRepeat, setAllowRepeat] = useState(false);
   const [tailorings, setTailorings] = useState<TailoringSummary[]>([]);
   const [sends, setSends] = useState<EmailLogOut[]>([]);
   const [candidates, setCandidates] = useState<EmailCandidateOut[]>([]);
@@ -185,11 +186,26 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
     }
   }
 
-  function addToQueue(m: GeneratedMessage) {
+  async function addToQueue(m: GeneratedMessage) {
     const to = form.recruiter_email.trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
       toast.err("Add a valid recruiter email first (or use Find).");
       return;
+    }
+    if (queue.some((q) => q.to_email.toLowerCase() === to.toLowerCase())) {
+      toast.warn(`${to} is already in the queue.`);
+      return;
+    }
+    try {
+      const history = await api.contacted(to);
+      if (history.count) {
+        toast.warn(
+          `You already emailed ${to}${history.last_sent_at ? ` on ${formatDate(history.last_sent_at)}` : ""}. ` +
+            "It will be skipped unless you tick Allow repeats."
+        );
+      }
+    } catch {
+      /* history is advisory; the server re-checks on send */
     }
     setQueue([
       ...queue,
@@ -201,6 +217,7 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
         company: form.company,
         role: form.role,
         tailoring_id: attachId ?? undefined,
+        job_id: job?.id || undefined,
       },
     ]);
     toast.ok(`Queued for ${to}.`);
@@ -210,12 +227,22 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
     if (!queue.length) return;
     setSending(true);
     try {
-      const res = await api.sendBatch(queue, dryRun);
-      if (dryRun) {
-        toast.ok(`Test run: ${res.results.length} email(s) look valid. Nothing was sent.`);
+      const testOnly = dryRun || !smtpReady;
+      const res = await api.sendBatch(queue, testOnly, allowRepeat);
+      const skipped = res.results.filter((r) => r.status === "skipped");
+      if (skipped.length) {
+        toast.warn(
+          `Skipped ${skipped.map((s) => `${s.to_email} (${s.error})`).join(", ")}. Tick Allow repeats to send anyway.`
+        );
+      }
+      if (testOnly) {
+        const ok = res.results.length - skipped.length;
+        toast.ok(`Test run: ${ok} email(s) look valid. Nothing was sent.`);
       } else {
-        toast.ok(`Sending ${res.queued} email(s)… watch the status below.`);
-        setQueue([]);
+        if (res.queued) toast.ok(`Sending ${res.queued} email(s)… watch the status below.`);
+        // Keep skipped ones queued so they can be re-sent with Allow repeats.
+        const skippedTo = new Set(skipped.map((s) => s.to_email.toLowerCase()));
+        setQueue(queue.filter((q) => skippedTo.has(q.to_email.toLowerCase())));
         loadSends();
         if (!pollRef.current) pollRef.current = window.setInterval(loadSends, 3000);
       }
@@ -529,6 +556,10 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
             <label className="check">
               <input type="checkbox" checked={dryRun || !smtpReady} disabled={!smtpReady} onChange={(e) => setDryRun(e.target.checked)} />
               Test run (validate only, don't send)
+            </label>
+            <label className="check" title="Send even to recruiters you have already emailed">
+              <input type="checkbox" checked={allowRepeat} onChange={(e) => setAllowRepeat(e.target.checked)} />
+              Allow repeats
             </label>
             <button onClick={send} disabled={!queue.length || sending}>
               {sending ? <Spinner /> : <Icon name="outreach" size={16} />}

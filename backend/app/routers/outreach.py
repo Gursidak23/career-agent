@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -17,6 +18,7 @@ from ..schemas import (
     BatchSendRequest,
     BatchSendResponse,
     CandidateProfile,
+    ContactHistory,
     EmailLogOut,
     MessageGenRequest,
     MessageGenResponse,
@@ -24,6 +26,7 @@ from ..schemas import (
     SendItem,
     SendResult,
 )
+from .applications import advance, track
 
 router = APIRouter(prefix="/api/outreach", tags=["outreach"])
 
@@ -125,11 +128,21 @@ async def _run_send(
     results = await send_batch(items, attachments=att_paths, attachment_names=attachment_names)
     db = SessionLocal()
     try:
-        for log_id, res in zip(log_ids, results, strict=False):
+        for log_id, res, item in zip(log_ids, results, items, strict=False):
             row = db.get(EmailLog, log_id)
             if row is not None:
                 row.status = res.status
                 row.error = res.error
+            if res.status == "sent" and (item.job_id or (item.company and item.role)):
+                card = track(
+                    db,
+                    job_id=item.job_id,
+                    company=item.company or "",
+                    role=item.role or "",
+                    tailoring_id=item.tailoring_id,
+                )
+                card.recruiter_email = str(item.to_email)
+                advance(card, "contacted")
         db.commit()
     finally:
         db.close()
@@ -144,9 +157,25 @@ async def send(
     if not req.items:
         raise HTTPException(status_code=400, detail="No recipients provided")
 
-    if req.dry_run:
-        results = await send_batch(req.items, dry_run=True)
-        return BatchSendResponse(results=results, sent=0, failed=0, queued=0)
+    # Never email the same recruiter twice by accident.
+    skipped: list[SendResult] = []
+    if not req.allow_repeat:
+        history = {h.email.lower(): h for h in (_history(db, str(i.to_email)) for i in req.items)}
+        keep = []
+        for item in req.items:
+            h = history[str(item.to_email).lower()]
+            if h.count:
+                when = h.last_sent_at.strftime("%d %b %Y") if h.last_sent_at else "earlier"
+                skipped.append(
+                    SendResult(to_email=str(item.to_email), status="skipped", error=f"Already emailed on {when}")
+                )
+            else:
+                keep.append(item)
+        req.items = keep
+
+    if req.dry_run or not req.items:
+        results = await send_batch(req.items, dry_run=True) if req.items else []
+        return BatchSendResponse(results=skipped + results, sent=0, failed=0, queued=0)
 
     if not smtp_configured():
         raise HTTPException(
@@ -162,7 +191,9 @@ async def send(
         att = _attachment_for(db, item)
         attachments.append(str(att) if att else None)
         attachment_names.append(_attachment_name(db, item, att) if att else None)
-        row = EmailLog(to_email=str(item.to_email), subject=item.subject, status="pending")
+        row = EmailLog(
+            to_email=str(item.to_email), subject=item.subject, status="pending", job_id=item.job_id
+        )
         db.add(row)
         db.flush()
         log_ids.append(row.id)
@@ -171,7 +202,22 @@ async def send(
     background_tasks.add_task(_run_send, req.items, log_ids, attachments, attachment_names)
 
     results = [SendResult(to_email=str(i.to_email), status="queued") for i in req.items]
-    return BatchSendResponse(results=results, sent=0, failed=0, queued=len(results))
+    return BatchSendResponse(results=skipped + results, sent=0, failed=0, queued=len(results))
+
+
+def _history(db: Session, email: str) -> ContactHistory:
+    count, last = db.execute(
+        select(func.count(EmailLog.id), func.max(EmailLog.created_at)).where(
+            func.lower(EmailLog.to_email) == email.lower(), EmailLog.status == "sent"
+        )
+    ).one()
+    return ContactHistory(email=email, count=count, last_sent_at=last)
+
+
+@router.get("/contacted", response_model=ContactHistory)
+def contacted(email: str, db: Session = Depends(get_db)) -> ContactHistory:
+    """How often (and when last) this address was emailed successfully."""
+    return _history(db, email)
 
 
 @router.get("/sends", response_model=list[EmailLogOut])

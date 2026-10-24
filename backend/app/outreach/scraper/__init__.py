@@ -6,6 +6,7 @@ Default sources use free, keyless public APIs:
   - `remoteok`   https://remoteok.com/api
   - `arbeitnow`  https://www.arbeitnow.com/api/job-board-api
   - `hackernews` YC "Ask HN: Who is hiring?" monthly thread (often has emails)
+  - `companies`  company career boards on Greenhouse / Lever / Ashby
 
 `apify` aggregates Indian job boards (Naukri/Foundit/Hirist/Indeed/Internshala/
 LinkedIn) via the Apify "New Job Posts Finder" actor — needs a free Apify token.
@@ -19,6 +20,7 @@ from .aggregate import AggregateSource
 from .apify_jobs import ApifyJobsSource
 from .arbeitnow import ArbeitnowSource
 from .base import JobRecord, JobSource
+from .company_boards import CompanyBoardsSource
 from .hackernews import HackerNewsSource
 from .remoteok import RemoteOkSource
 from .remotive import RemotiveSource
@@ -30,6 +32,7 @@ _SOURCES: dict[str, JobSource] = {
     "remoteok": RemoteOkSource(),
     "arbeitnow": ArbeitnowSource(),
     "hackernews": HackerNewsSource(),
+    "companies": CompanyBoardsSource(),
     "apify": ApifyJobsSource(),
     "scrapy": ScrapySource(),
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
@@ -183,8 +184,28 @@ class TailorRequest(BaseModel):
     resume_id: int
     role: str
     job_description: str | None = None
+    # Job post being targeted; adds/links it on the tracker board.
+    job_id: int | None = None
     target_score: float = 90.0
     max_iterations: int = 4
+
+
+class BulletReview(BaseModel):
+    """One reworded line: applied automatically, or held back with reasons."""
+
+    section: Literal["experience", "projects", "project_description", "summary", "headline"]
+    entry: int = 0  # index of the job/project
+    index: int = 0  # bullet index within it
+    label: str = ""  # e.g. company or project name
+    original: str
+    suggested: str
+    flags: list[str] = Field(default_factory=list)
+    applied: bool = False
+
+
+class ReviewDecision(BaseModel):
+    # One flag per review, in order: use the suggestion (true) or the original.
+    applied: list[bool]
 
 
 class TailorResponse(BaseModel):
@@ -200,6 +221,7 @@ class TailorResponse(BaseModel):
     # Score of the original resume for the same role/JD, to show the improvement.
     baseline_score: float | None = None
     job_description: str | None = None
+    reviews: list[BulletReview] = Field(default_factory=list)
 
 
 class ScoreRequest(BaseModel):
@@ -251,11 +273,21 @@ class SendItem(BaseModel):
     role: str | None = None
     # Optional: attach this tailoring's generated resume (PDF) to the email.
     tailoring_id: int | None = None
+    # The job this email is about (links it to the tracker card).
+    job_id: int | None = None
 
 
 class BatchSendRequest(BaseModel):
     items: list[SendItem]
     dry_run: bool = False
+    # Recipients already emailed are skipped unless this is set.
+    allow_repeat: bool = False
+
+
+class ContactHistory(BaseModel):
+    email: str
+    count: int = 0
+    last_sent_at: datetime | None = None
 
 
 class SendResult(BaseModel):
@@ -369,6 +401,16 @@ class JobOut(BaseModel):
     recruiter_name: str | None = None
     recruiter_email: str | None = None
     description: str | None = None
+    created_at: datetime | None = None
+    # Fit against the chosen resume (only when resume_id is given).
+    match_score: int | None = None
+    match_matched: list[str] = Field(default_factory=list)
+    match_missing: list[str] = Field(default_factory=list)
+    # Tracker link, if this job is on the board.
+    application_id: int | None = None
+    application_status: str | None = None
+    # Set on /refresh responses: first time this posting was seen.
+    is_new: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -380,6 +422,49 @@ class JobRefreshRequest(BaseModel):
     limit: int = 25
     # When true, run the email finder for postings missing a recruiter email.
     enrich_emails: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# Application tracker
+# --------------------------------------------------------------------------- #
+ApplicationStatus = Literal["saved", "applied", "contacted", "replied", "interview", "offer", "rejected"]
+
+
+class ApplicationCreate(BaseModel):
+    job_id: int | None = None
+    company: str = ""
+    role: str = ""
+    url: str | None = None
+    status: ApplicationStatus = "saved"
+    tailoring_id: int | None = None
+    notes: str | None = None
+
+
+class ApplicationUpdate(BaseModel):
+    status: ApplicationStatus | None = None
+    notes: str | None = None
+    tailoring_id: int | None = None
+    recruiter_email: str | None = None
+
+
+class ApplicationOut(BaseModel):
+    id: int
+    created_at: datetime
+    updated_at: datetime | None = None
+    job_id: int | None = None
+    company: str
+    role: str
+    url: str | None = None
+    location: str | None = None
+    status: str
+    tailoring_id: int | None = None
+    tailoring_score: float | None = None
+    recruiter_email: str | None = None
+    notes: str | None = None
+    applied_at: datetime | None = None
+    contacted_at: datetime | None = None
+    emails_sent: int = 0
+    last_emailed_at: datetime | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -413,3 +498,6 @@ class SettingsStatus(BaseModel):
     linkedin_available: bool = False
     # Shell variables overriding different .env values (stale terminal env).
     env_overrides: list[str] = Field(default_factory=list)
+    company_boards: int = 0
+    auto_refresh_hours: float = 0
+    digest_email: str | None = None
