@@ -1,0 +1,132 @@
+((# Classic one-page technical resume, single column for ATS parsing:
+   centered uppercase name + headline, ruled section titles, company/location over
+   italic title/dates, grouped skills, linked certifications. Sections follow the
+   original resume's order. `d` holds density settings so the renderer can tighten
+   spacing until the output fits the original page count. #))
+\documentclass[10pt,((( r.layout.page_size or "a4" )))paper]{article}
+
+\usepackage[left=((( d.margin_x ))),right=((( d.margin_x ))),top=((( d.margin_y ))),bottom=((( d.margin_y )))]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\setlength{\parindent}{0pt}
+\pagestyle{empty}
+% Never hyphenate: a word split across lines extracts as two tokens and breaks
+% ATS keyword matching. \sloppy absorbs the slack instead.
+\hyphenpenalty=10000
+\exhyphenpenalty=10000
+\sloppy
+\setlist{nolistsep}
+\setlist[itemize]{leftmargin=1.4em,itemsep=((( d.itemsep )))}
+\definecolor{linknavy}{HTML}{14487A}
+\hypersetup{
+  pdftitle={((( r.contact.name | tex )))((* if r.contact.headline *)) | ((( r.contact.headline | tex )))((* endif *))},
+  pdfauthor={((( r.contact.name | tex )))},
+}
+
+\newcommand\sectionTitle[1]{%
+  \vspace{((( d.section_gap )))}%
+  {\textbf{\MakeUppercase{#1}}}\par\vspace{2pt}\hrule\vspace{3pt}%
+}
+
+((* macro link(url, text) *))\href{((( url | texurl )))}{((( text )))}((* endmacro *))
+
+\begin{document}
+\fontsize{((( d.font )))}{((( d.leading )))}\selectfont
+
+% ---------- Header ----------
+\begin{center}
+  {\fontsize{21pt}{24pt}\selectfont\bfseries\MakeUppercase{((( r.contact.name | tex )))}}\par\vspace{2pt}
+  {\small
+((* if r.contact.headline *))
+  \textbf{((( r.contact.headline | tex )))}\\
+((* endif *))
+((* set line1 = [] *))
+((* if r.contact.location *))((* set _ = line1.append(r.contact.location | tex) *))((* endif *))
+((* if r.contact.phone *))((* set _ = line1.append(r.contact.phone | tex) *))((* endif *))
+((* if r.contact.email *))((* set _ = line1.append(link("mailto:" ~ r.contact.email, r.contact.email | tex)) *))((* endif *))
+((* set line2 = [] *))
+((* for url, text in contact_links *))((* set _ = line2.append(link(url, text | tex)) *))((* endfor *))
+  ((( line1 | join("\\hspace{6pt}\\textbullet\\hspace{6pt}") )))((* if line2 *))\\
+  ((( line2 | join("\\hspace{6pt}\\textbullet\\hspace{6pt}") )))((* endif *))
+  }
+\end{center}
+\vspace{-8pt}
+
+((* for section in r.ordered_sections() *))
+((* if section == "summary" *))
+\sectionTitle{Summary}
+((( r.summary | tex )))\par
+
+((* elif section == "experience" *))
+\sectionTitle{Experience}
+((* for e in r.experience *))
+\textbf{((( e.company | tex )))}\hfill ((( (e.location or "") | tex )))\\
+\emph{((( e.title | tex )))}\hfill ((( [e.start_date, e.end_date] | select | join(" - ") | tex )))
+((* if e.bullets *))
+\begin{itemize}
+((* for b in e.bullets *))
+  \item ((( b | tex )))
+((* endfor *))
+\end{itemize}
+((* endif *))
+\vspace{((( d.entry_gap )))}
+((* endfor *))
+
+((* elif section == "projects" *))
+\sectionTitle{Projects}
+((* for p in r.projects *))
+\textbf{((( p.name | tex )))}((* if p.tech *)) \textbar{} \emph{((( p.tech | join(", ") | tex )))}((* endif *))((* if p.link *))\hfill ((( link(p.link | fullurl, "\\textcolor{linknavy}{" ~ (p.link | linklabel) ~ "}") )))((* endif *))\par
+((* if p.description *))((( p.description | tex )))\par((* endif *))
+((* if p.bullets *))
+\begin{itemize}
+((* for b in p.bullets *))
+  \item ((( b | tex )))
+((* endfor *))
+\end{itemize}
+((* endif *))
+\vspace{((( d.entry_gap )))}
+((* endfor *))
+
+((* elif section == "skills" *))
+\sectionTitle{((( "Technical Skills" if r.skill_groups else "Skills" )))}
+((* if r.skill_groups *))
+((* for g in r.skill_groups *))
+\textbf{((( g.category | tex ))):} ((( g.skills | join(", ") | tex )))\par
+((* endfor *))
+((* else *))
+((( r.skills | join(", ") | tex )))\par
+((* endif *))
+
+((* elif section == "education" *))
+\sectionTitle{Education}
+((* for ed in r.education *))
+((* set details = (ed.details or "").split("\n") | map("trim") | select | list *))
+((* set inline = details | select("shortdetail") | list *))
+\textbf{((( ed.degree | tex )))}\\
+((( ([ed.institution, ed.location, [ed.start_date, ed.end_date] | select | join(" - ")] + inline) | select | map("tex") | join(" \\textbar{} ") )))
+((* for line in details if line not in inline *))\\
+((( line | labelled )))
+((* endfor *))
+\par\vspace{((( d.entry_gap )))}
+((* endfor *))
+
+((* elif section == "certifications" *))
+\sectionTitle{Certifications}
+((* for c in r.certifications *))
+((* if c.url *))((( link(c.url, c.name | tex) )))((* else *))((( c.name | tex )))((* endif *))((* if c.date *)) \textbar{} ((( c.date | tex )))((* endif *))((* if c.url *)) \textbar{} ((( link(c.url, "\\textcolor{linknavy}{View credential}") )))((* endif *))\par
+((* endfor *))
+
+((* else *))
+((* set x = r.extra_sections | selectattr("title", "equalto", section) | first *))
+\sectionTitle{((( x.title | tex )))}
+((* for item in x["items"] *))
+((( item | labelled )))\par
+((* endfor *))
+((* endif *))
+((* endfor *))
+
+\end{document}
