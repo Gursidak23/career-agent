@@ -1,0 +1,12 @@
+# gitleaks: the default rules, minus known false positives. Used by the
+# pre-commit hook (scripts/hooks/pre-commit) and the CI "leaks" job.
+title = "career-agent"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "A settings field named 'linkedin', not a LinkedIn client secret"
+targetRules = ["linkedin-client-secret"]
+regexTarget = "line"
+regexes = ['''^\s*linkedin:\s*LinkedInSettings\s*=\s*Field\(default_factory=LinkedInSettings\)\s*$''']

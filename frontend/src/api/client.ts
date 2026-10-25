@@ -386,6 +386,7 @@ export interface SettingsStatus {
   linkedin_enabled: boolean;
   linkedin_available: boolean;
   env_overrides?: string[];
+  env_file?: string;
   company_boards?: number;
   auto_refresh_hours?: number;
   digest_email?: string | null;

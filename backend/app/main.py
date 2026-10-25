@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from .config import get_settings, shadowed_env_vars
+from .config import env_file_path, get_settings, legacy_data_in_repo, shadowed_env_vars
 from .db import init_db
 from .llm.router import aclose_llm
 from .logging_setup import get_logger
@@ -29,9 +29,17 @@ async def lifespan(app: FastAPI):
     stale = shadowed_env_vars()
     if stale:
         log.warning(
-            "These shell variables override different values in backend/.env: %s. "
+            "These shell variables override different values in %s: %s. "
             "Unset them or start the backend from a fresh terminal.",
+            env_file_path(),
             ", ".join(stale),
+        )
+    if legacy_data_in_repo():
+        log.warning(
+            "Personal data is still inside the repository (%s). Stop the app and run "
+            "`career-agent migrate-home` to move it to %s.",
+            ", ".join(p.name for p in legacy_data_in_repo()),
+            env_file_path().parent,
         )
     yield
     await aclose_llm()

@@ -314,7 +314,7 @@ export default function System() {
             </button>
           </div>
           <p className="hint" style={{ marginTop: 0 }}>
-            Daily and automatic: the database plus your uploaded resumes, newest 14 kept in backend/data/backups.
+            Daily and automatic: the database plus your uploaded resumes, newest 14 kept in ~/.career-agent/backups.
           </p>
           {backups.length === 0 ? (
             <EmptyState title="No backups yet" />

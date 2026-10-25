@@ -1,8 +1,18 @@
 """Shared fixtures: an isolated database for everything that opens its own session."""
 
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 
-import pytest
+# Before anything imports the app: tests get their own empty home, so they never
+# open the real database, read the real .env (API keys), or write real files.
+_TEST_HOME = tempfile.mkdtemp(prefix="career-agent-test-home-")
+os.environ["CAREER_HOME"] = _TEST_HOME
+atexit.register(shutil.rmtree, _TEST_HOME, ignore_errors=True)
+
+import pytest  # noqa: E402
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -27,6 +37,8 @@ def system(tmp_path, monkeypatch):
         if name.startswith("app") and hasattr(module, "SessionLocal"):
             monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr("app.config.Settings.data_path", property(lambda self: tmp_path), raising=False)
+    # Health must not depend on whether this checkout still has pre-migration data.
+    monkeypatch.setattr("app.home_migration.legacy_items", lambda: [])
 
     def _db():
         s = factory()

@@ -7,7 +7,7 @@ import time
 
 from fastapi import APIRouter
 
-from ..config import get_settings, shadowed_env_vars
+from ..config import env_file_path, get_settings, shadowed_env_vars
 from ..llm import ChatMessage, LlmError
 from ..llm.router import available_providers, get_llm
 from ..outreach.email_finder import available_providers as email_providers
@@ -38,6 +38,7 @@ def status() -> SettingsStatus:
         linkedin_enabled=get_settings().linkedin.enabled,
         linkedin_available=playwright_available(),
         env_overrides=shadowed_env_vars(),
+        env_file=str(env_file_path()),
         company_boards=len(get_settings().scraper.company_boards),
         auto_refresh_hours=get_settings().scraper.auto_refresh_hours,
         digest_email=get_settings().scraper.digest_email,

@@ -80,7 +80,7 @@ export default function App() {
           >
             <h2 id="auth-title">Access token required</h2>
             <p className="muted small">
-              This Career Agent is protected. Enter the CAREER_API_TOKEN from its backend/.env.
+              This Career Agent is protected. Enter the CAREER_API_TOKEN from its ~/.career-agent/.env.
             </p>
             <div className="field">
               <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoFocus aria-label="Access token" />

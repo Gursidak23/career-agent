@@ -60,9 +60,30 @@ echo "==> Installing backend dependencies (editable)"
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet -e ".[dev]"
 
-if [ ! -f ".env" ]; then
-  echo "==> Creating backend/.env from .env.example (fill in your keys!)"
-  cp .env.example .env
+# Your data and keys live outside the repository, in CAREER_HOME.
+CAREER_HOME="${CAREER_HOME:-$HOME/.career-agent}"
+export CAREER_HOME
+# Older versions kept them in backend/; move them once (backed up, verified first).
+if [ -e "career_agent.db" ] || [ -e ".env" ] || [ -d "data" ]; then
+  echo "==> Moving your data out of the repository into $CAREER_HOME"
+  career-agent migrate-home
+fi
+mkdir -p "$CAREER_HOME"
+chmod 700 "$CAREER_HOME"
+if [ ! -f "$CAREER_HOME/.env" ]; then
+  echo "==> Creating $CAREER_HOME/.env from .env.example (fill in your keys!)"
+  cp .env.example "$CAREER_HOME/.env"
+  chmod 600 "$CAREER_HOME/.env"
+fi
+
+# Block commits containing secrets or your personal data (scripts/hooks/pre-commit).
+if git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1 \
+  && [ "$(git -C "$ROOT_DIR" config --get core.hooksPath || true)" != "scripts/hooks" ]; then
+  echo "==> Turning on the leak check that runs before every commit"
+  git -C "$ROOT_DIR" config core.hooksPath scripts/hooks
+fi
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "    note: install gitleaks (brew install gitleaks); commits are refused without it."
 fi
 
 # ---------- Frontend bootstrap ----------

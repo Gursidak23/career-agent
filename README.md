@@ -100,7 +100,8 @@ cd career-agent/backend
 python -m venv .venv
 .venv\Scripts\activate            # Windows  (source .venv/bin/activate on macOS/Linux)
 python -m pip install -e ".[dev]"
-copy .env.example .env            # then fill in your keys
+mkdir %USERPROFILE%\.career-agent && copy .env.example %USERPROFILE%\.career-agent\.env
+                                  # then fill in your keys (macOS/Linux: ~/.career-agent/.env)
 uvicorn app.main:app --reload
 ```
 
@@ -139,11 +140,51 @@ All settings use the `CAREER_` env prefix with `__` for nesting (see
 answered in ~2 s versus 60–100 s+ for `gemini-flash-latest`, with comparable
 output for this workload.
 
-Real environment variables override `backend/.env`. If you change `.env`,
+Real environment variables override `~/.career-agent/.env`. If you change `.env`,
 restart the backend from a **fresh** terminal; the Settings page warns when a
 stale shell variable is shadowing a different `.env` value, and its **Test
 connections** button makes a real call to each AI provider (and an SMTP login
 without sending).
+
+### Where your data lives
+
+Nothing personal is kept in the code folder. Your settings and keys, database,
+uploaded and generated resumes, backups, AI cache and LinkedIn session all live
+in **`~/.career-agent/`** (set `CAREER_HOME` to use another folder). It's
+private to your user account (`chmod 700`; `.env` is `600`). `career-agent where`
+prints the exact paths.
+
+Older versions kept this data in `backend/`. `./run.sh` moves it automatically
+the first time, or you can run `career-agent migrate-home` with the app stopped.
+The move zips the originals into `~/.career-agent/backups/pre-move-*.zip`, then
+copies everything and checks it (database row counts, file checksums). The old
+copies are deleted only after that check passes.
+
+Tests never touch this folder: every test run gets its own empty home.
+
+### Keeping personal data out of git
+
+Two automatic checks stop secrets and personal data from being committed:
+
+- **Before every commit** (`scripts/hooks/pre-commit`, which `./run.sh` turns on,
+  or by hand: `git config core.hooksPath scripts/hooks`):
+  - **gitleaks** scans the staged changes for secrets; install it with
+    `brew install gitleaks`.
+  - **`scripts/check_personal_data.py`** refuses data files (databases, `.env`,
+    PDF/DOCX resumes, zips). It also refuses any line that matches your own
+    details: your name, email, phone (in any format), profile links, employers,
+    schools, project names, any 8 words in a row from your resume, every email
+    address the app has stored, and the secret values in your `.env`.
+
+    The deny-list is built from `~/.career-agent` at check time, so it is never
+    written down or committed. Add extra terms to
+    `~/.career-agent/private-patterns.txt` (one per line, `re:` for a regex),
+    and false alarms to `~/.career-agent/private-allow.txt`.
+- **In CI**, the `leaks` job runs gitleaks over the full history and refuses
+  data files.
+
+Test and example data must be made up (e.g. "Jane Doe", `jane@example.com`,
+"Acme Corp"). The checks cover test files too.
 
 ## Workflow
 

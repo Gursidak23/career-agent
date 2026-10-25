@@ -4,6 +4,8 @@
   career-agent worker                               background tasks and schedules
   career-agent backup                               back up now
   career-agent health                               print system health
+  career-agent migrate-home                         move old in-repo data to CAREER_HOME
+  career-agent where                                print where your data lives
 """
 
 from __future__ import annotations
@@ -34,7 +36,34 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("worker", help="run background tasks and schedules")
     sub.add_parser("backup", help="back up the database and uploads now")
     sub.add_parser("health", help="print system health as JSON")
+    sub.add_parser("migrate-home", help="move personal data out of the repository into CAREER_HOME")
+    sub.add_parser("where", help="print where your data and settings live")
     args = parser.parse_args(argv)
+
+    if args.command == "migrate-home":
+        # Before anything imports app.db, which would create an empty database.
+        from .config import career_home
+        from .home_migration import migrate
+
+        try:
+            moved = migrate(career_home())
+        except RuntimeError as exc:
+            sys.exit(f"Not moved: {exc}")
+        if not moved:
+            print(f"Nothing to move; your data is in {career_home()}")
+        else:
+            print(f"Moved to {career_home()}:")
+            for line in moved:
+                print(f"  - {line}")
+        return
+    if args.command == "where":
+        from .config import career_home, env_file_path, get_settings
+
+        print(f"home:     {career_home()}")
+        print(f"settings: {env_file_path()}{'' if env_file_path().exists() else '  (missing)'}")
+        print(f"database: {get_settings().db_url}")
+        print(f"files:    {get_settings().data_dir}")
+        return
 
     if args.command == "api":
         if args.prod:
@@ -45,7 +74,7 @@ def main(argv: list[str] | None = None) -> None:
         if not _is_loopback(args.host) and not get_settings().api_token:
             sys.exit(
                 f"Refusing to listen on {args.host} without an API token: anyone on the network could "
-                "read your data and send email as you. Set CAREER_API_TOKEN in backend/.env, or use 127.0.0.1."
+                "read your data and send email as you. Set CAREER_API_TOKEN in ~/.career-agent/.env, or use 127.0.0.1."
             )
         import uvicorn
 

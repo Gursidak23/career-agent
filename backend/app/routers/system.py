@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import case, func, select, text
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
+from ..config import get_settings, legacy_data_in_repo
 from ..db import get_db
 from ..llm.copilot import credits_today
 from ..models import Event, LlmCall, Task
@@ -62,6 +62,8 @@ def health(db: Session = Depends(get_db)) -> dict:
         problems.append(f"{failed_24h} task(s) failed in the last 24h")
     if llm_fail_24h:
         problems.append(f"{llm_fail_24h} AI call(s) failed in the last 24h")
+    if legacy_data_in_repo():
+        problems.append("Personal data is still inside the code folder: stop the app and run `career-agent migrate-home`")
     return {
         "status": "ok" if not problems else "degraded",
         "problems": problems,

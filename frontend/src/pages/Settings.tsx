@@ -84,8 +84,8 @@ export default function Settings({ onStatus }: { onStatus: (s: SettingsStatus) =
         <div>
           <h1>Settings</h1>
           <p className="subtitle">
-            Configuration lives in <code>backend/.env</code> (restart the backend after editing). This page shows what
-            is active and lets you test it.
+            Configuration lives in <code>{status.env_file || "~/.career-agent/.env"}</code>, outside the code folder
+            (restart the backend after editing). This page shows what is active and lets you test it.
           </p>
         </div>
       </div>
@@ -93,7 +93,7 @@ export default function Settings({ onStatus }: { onStatus: (s: SettingsStatus) =
       {!!status.env_overrides?.length && (
         <div className="callout warn">
           <span>
-            <strong>Your terminal is overriding backend/.env.</strong> These variables were exported in the shell that
+            <strong>Your terminal is overriding your .env file.</strong> These variables were exported in the shell that
             started the backend and differ from <code>.env</code>: {status.env_overrides.join(", ")}. Restart the
             backend from a fresh terminal (or <code>unset</code> them) so your latest settings apply.
           </span>

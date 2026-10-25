@@ -615,6 +615,8 @@ class SettingsStatus(BaseModel):
     linkedin_available: bool = False
     # Shell variables overriding different .env values (stale terminal env).
     env_overrides: list[str] = Field(default_factory=list)
+    # Where settings are read from (outside the repository).
+    env_file: str = ""
     company_boards: int = 0
     auto_refresh_hours: float = 0
     digest_email: str | None = None

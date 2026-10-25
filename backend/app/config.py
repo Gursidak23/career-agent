@@ -15,6 +15,19 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def career_home() -> Path:
+    """Where everything personal lives: .env, the database, uploads, outputs, backups.
+
+    Deliberately outside the repository, so nothing personal can be committed by
+    accident. Defaults to ~/.career-agent; set CAREER_HOME to move it.
+    """
+    return Path(os.environ.get("CAREER_HOME") or Path.home() / ".career-agent").expanduser().resolve()
+
+
+def env_file_path() -> Path:
+    return career_home() / ".env"
+
+
 class LlmSettings(BaseModel):
     """LLM provider config. Providers are tried in a fixed fallback order:
     gemini -> groq -> copilot. A provider is simply skipped if its credential
@@ -128,7 +141,7 @@ class LinkedInSettings(BaseModel):
 
     enabled: bool = False
     headless: bool = True
-    user_data_dir: str = "./data/linkedin_profile"
+    user_data_dir: str = Field(default_factory=lambda: str(career_home() / "linkedin_profile"))
     # Browser channel to reuse (e.g. "chrome", "msedge"); blank = bundled Chromium.
     browser_channel: str = ""
     # Human-like pacing to reduce automation-detection / spam risk.
@@ -156,7 +169,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="CAREER_",
         env_nested_delimiter="__",
-        env_file=".env",
+        # The real file is chosen in get_settings(); see env_file_path().
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -172,8 +186,9 @@ class Settings(BaseSettings):
     serve_frontend: bool = False
     frontend_dist: str = "../frontend/dist"
 
-    db_url: str = "sqlite:///./career_agent.db"
-    data_dir: str = "./data"
+    db_url: str = Field(default_factory=lambda: f"sqlite:///{career_home() / 'career_agent.db'}")
+    # Uploads, generated resumes, backups, the LLM cache and lock files.
+    data_dir: str = Field(default_factory=lambda: str(career_home()))
     tectonic_bin: str = "tectonic"
 
     llm: LlmSettings = Field(default_factory=LlmSettings)
@@ -203,10 +218,17 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings(_env_file=env_file_path())
 
 
-def shadowed_env_vars(env_file: str = ".env") -> list[str]:
+def legacy_data_in_repo() -> list[Path]:
+    """Personal files still in the old in-repo locations (see `career-agent migrate-home`)."""
+    from .home_migration import legacy_items
+
+    return [path for _, path in legacy_items()]
+
+
+def shadowed_env_vars(env_file: Path | None = None) -> list[str]:
     """CAREER_* variables set in the process environment with a different value than .env.
 
     The process environment wins over .env, so a shell that exported an older
@@ -214,7 +236,8 @@ def shadowed_env_vars(env_file: str = ".env") -> list[str]:
     """
     from dotenv import dotenv_values
 
-    if not Path(env_file).exists():
+    env_file = env_file or env_file_path()
+    if not env_file.exists():
         return []
     file_values = dotenv_values(env_file)
     return sorted(

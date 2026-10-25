@@ -24,6 +24,8 @@ plist() { # label, subcommand args
     $(for a in "${@:2}"; do echo "<string>$a</string>"; done)
   </array>
   <key>WorkingDirectory</key><string>$BACKEND_DIR</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>CAREER_HOME</key><string>${CAREER_HOME:-$HOME/.career-agent}</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>

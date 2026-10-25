@@ -37,3 +37,25 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build  # type-checks (tsc --noEmit) then builds
+
+  leaks:
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moves to 26 on its own
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # scan every commit, not just the last one
+      # Databases, .env files, resumes and backups may never be committed. (Your
+      # personal details are checked before each commit by scripts/hooks/pre-commit,
+      # which builds its deny-list from your own machine; CI never sees that list.)
+      - name: No personal data files
+        run: python3 scripts/check_personal_data.py --all
+      - name: No secrets in any commit (gitleaks)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          curl -sSfLO "$base/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum --check --ignore-missing "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          ./gitleaks git --redact --no-banner --verbose .

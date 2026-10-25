@@ -539,7 +539,7 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
             <div className="callout warn">
               <span>
                 Email sending isn't set up yet, so only test runs are possible. Add your Gmail address and App Password
-                in <code>backend/.env</code> (see <Link to="/settings">Settings</Link>).
+                in <code>~/.career-agent/.env</code> (see <Link to="/settings">Settings</Link>).
               </span>
             </div>
           )}

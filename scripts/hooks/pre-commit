@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Blocks a commit that contains secrets or your personal data.
+#
+# Turned on by ./run.sh (or once by hand: git config core.hooksPath scripts/hooks).
+# The personal-data check builds its deny-list from your own Career Agent home
+# (~/.career-agent) at check time; see scripts/check_personal_data.py.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+PYTHON="$(command -v python3 || command -v python || true)"
+
+if [ -z "$PYTHON" ]; then
+  echo "pre-commit: Python 3 is needed to check for personal data." >&2
+  exit 1
+fi
+"$PYTHON" "$ROOT/scripts/check_personal_data.py" --staged
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed, so staged changes weren't checked for secrets." >&2
+  echo "            Install it (macOS: brew install gitleaks), then commit again." >&2
+  exit 1
+fi
+gitleaks git --pre-commit --staged --redact --no-banner --log-level warn "$ROOT"
