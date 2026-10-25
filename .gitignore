@@ -10,6 +10,13 @@ __pycache__/
 backend/.env
 backend/data/
 *.db
+# SQLite WAL side-files hold recent database pages (personal data).
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.sqlite3
 
 # Node / frontend

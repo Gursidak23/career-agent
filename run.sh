@@ -27,6 +27,23 @@ fi
 
 echo "==> Using Python: $PYTHON_BIN ($($PYTHON_BIN --version))"
 
+# ---------- Preflight: refuse to start a second copy ----------
+# Two copies would fight over the ports and run two workers on one database.
+if command -v lsof >/dev/null 2>&1; then
+  PORTS="8000"
+  [ "$MODE" = "dev" ] && PORTS="8000 5173"
+  for port in $PORTS; do
+    # lsof exits non-zero when the port is free; `|| true` keeps `set -e -o pipefail` from aborting.
+    holder="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1 " (pid " $2 ")"}' || true)"
+    if [ -n "$holder" ]; then
+      echo "ERROR: port $port is already in use by $holder." >&2
+      echo "       Career Agent is probably already running. Stop it first (Ctrl+C in its" >&2
+      echo "       terminal, or: kill <pid>), then run this again." >&2
+      exit 1
+    fi
+  done
+fi
+
 # ---------- Backend bootstrap ----------
 cd "$BACKEND_DIR"
 # Recreate the venv if it is missing or has no pip (a half-created venv makes
@@ -91,4 +108,18 @@ else
 fi
 
 echo "==> Running ($MODE). Press Ctrl+C to stop."
-wait
+
+# If any part stops (crash, port clash, a second worker refused), stop the rest
+# too rather than leave a half-working system behind. (macOS bash 3.2 has no
+# `wait -n`, so poll.)
+while true; do
+  for pid in "${PIDS[@]}"; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "" >&2
+      echo "ERROR: a component (pid $pid) stopped unexpectedly; see the messages above." >&2
+      echo "       Shutting everything down." >&2
+      exit 1
+    fi
+  done
+  sleep 2
+done

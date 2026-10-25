@@ -315,6 +315,26 @@ def test_prod_mode_serves_built_ui_with_client_routing(tmp_path, monkeypatch):
     assert client.get("/api/resume/roles").status_code == 200
 
 
+def test_only_one_worker_can_hold_the_lock(tmp_path):
+    import subprocess
+    import sys
+
+    from app.tasks.worker import acquire_single_worker_lock
+
+    lock_path = tmp_path / "worker.lock"
+    held = acquire_single_worker_lock(lock_path)
+    # A second process must be refused while this one holds the lock.
+    code = (
+        "from pathlib import Path; from app.tasks.worker import acquire_single_worker_lock; "
+        f"acquire_single_worker_lock(Path({str(lock_path)!r}))"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert proc.returncode != 0 and "already running" in proc.stderr
+    held.close()  # released: a new worker may start
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0
+
+
 def test_cli_refuses_public_bind_without_token(monkeypatch):
     from app import cli
     from app.config import get_settings

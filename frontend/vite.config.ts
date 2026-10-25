@@ -8,6 +8,8 @@ export default defineConfig({
     // the http://127.0.0.1:5173 URL printed by run.sh and the README.
     host: "127.0.0.1",
     port: 5173,
+    // Fail instead of drifting to 5174: a second copy should stop, not half-start.
+    strictPort: true,
     proxy: {
       "/api": "http://127.0.0.1:8000",
       "/health": "http://127.0.0.1:8000",

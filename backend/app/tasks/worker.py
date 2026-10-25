@@ -10,10 +10,14 @@ stay queued; everything else keeps running.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
 import signal
 import socket
+import sys
 from datetime import timedelta
+from pathlib import Path
+from typing import IO
 
 from sqlalchemy import select
 
@@ -148,7 +152,30 @@ async def run_worker(*, concurrency: int = 3, poll_seconds: float = 1.0, stop: a
         events.record("worker.stopped", f"Worker {worker_id} stopped")
 
 
+def acquire_single_worker_lock(path: Path | None = None) -> IO[str]:
+    """Allow one worker per database. On start a worker requeues every 'running'
+    task as orphaned, which is only safe if no other worker is alive.
+
+    An OS file lock is released automatically when the process dies (even on
+    kill -9), so a crash never leaves a stale lock. Exits if another worker holds it.
+    """
+    path = path or get_settings().data_path / "worker.lock"
+    handle = open(path, "a+")  # noqa: SIM115 - held open for the process lifetime
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        holder = handle.read().strip() or "unknown"
+        sys.exit(f"Another Career Agent worker is already running (pid {holder}). Only one may run at a time.")
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
+
+
 def main() -> None:
+    lock = acquire_single_worker_lock()  # noqa: F841 - keep the lock for the process lifetime
     stop = asyncio.Event()
 
     async def _run() -> None:
