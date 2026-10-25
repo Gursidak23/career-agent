@@ -94,7 +94,8 @@ def test_tailoring_history_and_reopen(client, monkeypatch):
         return _parsed(), None
 
     monkeypatch.setattr(resume_router, "structure_resume", fake_structure)
-    pdf = _pdf_bytes("Jane Doe resume text for history")
+    # Over 50 characters, so it's read as text, not routed to OCR (not installed in CI).
+    pdf = _pdf_bytes("Jane Doe - Engineer at Acme - history test resume with enough text to parse")
     resume_id = client.post("/api/resume/upload", files={"file": ("cv.pdf", pdf, "application/pdf")}).json()["resume_id"]
 
     # Insert a tailoring directly (the real tailor endpoint needs an LLM).
