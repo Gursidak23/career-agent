@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import LlmSettings
-from .base import ChatMessage, LlmError
+from .base import ChatMessage, LlmError, report_usage
 
 
 def _to_openai(messages: list[ChatMessage]) -> list[dict[str, str]]:
@@ -53,4 +53,7 @@ class GroqClient:
             )
         except Exception as exc:  # noqa: BLE001 - normalize provider errors
             raise LlmError(f"Groq error: {exc}") from exc
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            report_usage(getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None))
         return resp.choices[0].message.content or ""

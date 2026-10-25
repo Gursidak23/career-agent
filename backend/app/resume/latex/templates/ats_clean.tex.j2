@@ -6,8 +6,16 @@
 \documentclass[10pt,((( r.layout.page_size or "a4" )))paper]{article}
 
 \usepackage[left=((( d.margin_x ))),right=((( d.margin_x ))),top=((( d.margin_y ))),bottom=((( d.margin_y )))]{geometry}
-\usepackage[T1]{fontenc}
-\usepackage{lmodern}
+% OpenType Latin Modern with ligatures off: an "fi"/"ff" ligature extracts as a
+% single glyph (U+FB01...), so "certified" or "off" would vanish for ATS keyword
+% search. (Tectonic runs XeTeX, so this replaces pdfTeX's glyphtounicode trick.)
+\usepackage{fontspec}
+\setmainfont{lmroman10}[
+  Extension=.otf, UprightFont=*-regular, BoldFont=*-bold,
+  ItalicFont=*-italic, BoldItalicFont=*-bolditalic, Ligatures={NoCommon},
+  % Kerned bold capitals ("SUMMAR Y", "SMAR TERS") read back as two words in
+  % some parsers (pypdf), so bold text (headings, names, companies) is unkerned.
+  BoldFeatures={Kerning=Off}]
 \usepackage{enumitem}
 \usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}

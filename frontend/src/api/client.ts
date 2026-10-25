@@ -211,6 +211,155 @@ export interface ApplicationOut {
   last_emailed_at?: string | null;
 }
 
+export interface ExtractorResult {
+  name: string;
+  score: number;
+  word_coverage: number;
+  bullets_intact: number;
+  issues: string[];
+  preview: string;
+}
+
+export interface AtsCheckReport {
+  verdict: "excellent" | "good" | "risky";
+  score: number;
+  extractors: ExtractorResult[];
+  notes: string[];
+}
+
+export interface ScanReport {
+  seen_words: number;
+  seen_text: string;
+  keywords_in_view: string[];
+  keywords_buried: string[];
+  metrics_in_view: number;
+  metrics_total: number;
+  tips: string[];
+}
+
+export interface EvidenceLine {
+  id: number;
+  where: string;
+  text: string;
+}
+
+export interface Requirement {
+  text: string;
+  kind: "must" | "nice";
+  status: "met" | "partial" | "gap";
+  evidence: EvidenceLine[];
+  note: string;
+}
+
+export interface EvidenceReport {
+  requirements: Requirement[];
+  red_flags: { text: string; why: string }[];
+  must_met: number;
+  must_total: number;
+  nice_met: number;
+  nice_total: number;
+  years_required?: number | null;
+  years_candidate: number;
+}
+
+export interface DrillQuestion {
+  claim_id: number;
+  where: string;
+  claim: string;
+  question: string;
+  look_for: string[];
+}
+
+export interface DrillGrade {
+  verdict: "defended" | "shaky" | "undefended";
+  score: number;
+  feedback: string;
+  follow_up?: string | null;
+  safer_wording?: string | null;
+}
+
+/** A check target: an optimized version, or the original upload (+ role). */
+export type CheckTarget = { tailoringId: number } | { resumeId: number; role: string };
+
+const checkQuery = (t: CheckTarget) =>
+  "tailoringId" in t
+    ? `tailoring_id=${t.tailoringId}`
+    : `resume_id=${t.resumeId}&role=${encodeURIComponent(t.role)}`;
+
+export interface TaskOut {
+  id: number;
+  kind: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  attempts: number;
+  max_attempts: number;
+  created_at: string;
+  run_at?: string | null;
+  finished_at?: string | null;
+  progress?: string | null;
+  result?: Record<string, unknown> | null;
+  error?: string | null;
+  outward: boolean;
+  summary: string;
+}
+
+export interface Health {
+  status: "ok" | "degraded";
+  problems: string[];
+  database: boolean;
+  worker: { alive: boolean; last_heartbeat?: string | null; running: number };
+  queue: { queued: number; running: number; failed_24h: number };
+  automation_paused: boolean;
+  last_backup?: string | null;
+  copilot_credits_today: number;
+  copilot_daily_budget: number;
+}
+
+export interface SystemEvent {
+  id: number;
+  created_at: string;
+  kind: string;
+  level: "info" | "warn" | "error";
+  message: string;
+}
+
+export interface Usage {
+  days: number;
+  providers: {
+    provider: string;
+    calls: number;
+    ok: number;
+    avg_latency_ms: number;
+    input_tokens: number;
+    output_tokens: number;
+    credits: number;
+    fallbacks: number;
+  }[];
+  by_purpose: Record<string, number>;
+  copilot_credits_today: number;
+  copilot_daily_budget: number;
+  recent_errors: { created_at: string; purpose: string; error: string }[];
+}
+
+export interface BackupItem {
+  name: string;
+  size: number;
+  created_at: string;
+}
+
+/** Poll a background task until it finishes (succeeded, failed or cancelled). */
+export async function waitForTask(
+  id: number,
+  onUpdate?: (t: TaskOut) => void,
+  intervalMs = 1500
+): Promise<TaskOut> {
+  for (;;) {
+    const t = await api.task(id);
+    onUpdate?.(t);
+    if (t.status === "succeeded" || t.status === "failed" || t.status === "cancelled") return t;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 export interface ContactHistory {
   email: string;
   count: number;
@@ -308,12 +457,39 @@ export function errorMessage(e: unknown): string {
   return String(e);
 }
 
+const TOKEN_KEY = "ca.apiToken";
+
+export function getApiToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+/** Saved for API calls and as a cookie, so plain links (downloads, images) work too. */
+export function setApiToken(token: string) {
+  try {
+    localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    /* storage unavailable: the cookie still works for this session */
+  }
+  document.cookie = `ca_token=${encodeURIComponent(token)}; path=/; SameSite=Strict`;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
+  const token = getApiToken();
+  const headers = new Headers(init?.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
   try {
-    res = await fetch(url, init);
+    res = await fetch(url, { ...init, headers });
   } catch {
     throw new Error("Can't reach the backend. Is it running on port 8000?");
+  }
+  if (res.status === 401) {
+    window.dispatchEvent(new Event("ca:unauthorized"));
+    throw new Error("This Career Agent needs an access token.");
   }
   if (!res.ok) {
     let detail = res.statusText;
@@ -364,7 +540,33 @@ export const api = {
     target_score?: number;
     max_iterations?: number;
     job_id?: number;
-  }) => request<TailorResponse>("/api/resume/tailor", json(body)),
+  }) => request<TaskOut>("/api/resume/tailor", json(body)),
+
+  task: (id: number) => request<TaskOut>(`/api/system/tasks/${id}`),
+  tasks: (status?: string) => request<TaskOut[]>(`/api/system/tasks${status ? `?status=${status}` : ""}`),
+  cancelTask: (id: number) => request<TaskOut>(`/api/system/tasks/${id}/cancel`, { method: "POST" }),
+  retryTask: (id: number) => request<TaskOut>(`/api/system/tasks/${id}/retry`, { method: "POST" }),
+  health: () => request<Health>("/api/system/health"),
+  events: (limit = 100) => request<SystemEvent[]>(`/api/system/events?limit=${limit}`),
+  usage: (days = 7) => request<Usage>(`/api/system/usage?days=${days}`),
+  backups: () => request<BackupItem[]>("/api/system/backups"),
+  backupNow: () => request<TaskOut>("/api/system/backups", { method: "POST" }),
+  backupUrl: (name: string) => `/api/system/backups/${encodeURIComponent(name)}`,
+  setAutomation: (paused: boolean) => request<{ paused: boolean }>("/api/system/automation", json({ paused })),
+
+  rerender: (tailoringId: number) =>
+    request<TailorResponse>(`/api/resume/tailorings/${tailoringId}/render`, { method: "POST" }),
+
+  atsCheck: (t: CheckTarget) => request<AtsCheckReport>(`/api/checks/ats?${checkQuery(t)}`),
+  scan: (t: CheckTarget) => request<ScanReport>(`/api/checks/scan?${checkQuery(t)}`),
+  scanImageUrl: (t: CheckTarget, bust = "") => `/api/checks/scan.png?${checkQuery(t)}${bust ? `&v=${bust}` : ""}`,
+  evidence: (body: { resume_id: number; tailoring_id?: number; job_description?: string; job_id?: number }) =>
+    request<EvidenceReport>("/api/checks/evidence", json(body)),
+
+  drillQuestions: (body: { resume_id: number; tailoring_id?: number; count?: number }) =>
+    request<DrillQuestion[]>("/api/drill/questions", json(body)),
+  drillGrade: (body: { claim: string; question: string; look_for: string[]; answer: string }) =>
+    request<DrillGrade>("/api/drill/grade", json(body)),
 
   applyReview: (tailoringId: number, applied: boolean[]) =>
     request<TailorResponse>(`/api/resume/tailorings/${tailoringId}/review`, json({ applied })),

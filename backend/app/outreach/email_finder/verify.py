@@ -13,9 +13,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
-from .base import GRADE_MX_ONLY, GRADE_UNVERIFIED, GRADE_VERIFIED
 from ...config import get_settings
 from ...logging_setup import get_logger
+from .base import GRADE_MX_ONLY, GRADE_UNVERIFIED, GRADE_VERIFIED
 
 log = get_logger(__name__)
 

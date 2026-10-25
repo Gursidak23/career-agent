@@ -1,7 +1,7 @@
 """Pull postings from a source into the database, and the scheduled digest.
 
-Shared by the /api/jobs/refresh route and the optional background scheduler
-(CAREER_SCRAPER__AUTO_REFRESH_HOURS), which also emails a digest of new,
+Shared by the /api/jobs/refresh route and the worker's scheduled "refresh_jobs"
+task (CAREER_SCRAPER__AUTO_REFRESH_HOURS), which also emails a digest of new,
 well-matched jobs when CAREER_SCRAPER__DIGEST_EMAIL and SMTP are configured.
 """
 
@@ -117,12 +117,27 @@ async def run_scheduled_refresh() -> int:
         db.close()
 
 
-async def scheduler_loop() -> None:
-    """Background task started at app startup when auto_refresh_hours > 0."""
-    hours = get_settings().scraper.auto_refresh_hours
-    while True:
-        try:
-            await run_scheduled_refresh()
-        except Exception as exc:  # noqa: BLE001 - keep the loop alive on any failure
-            log.warning("scheduled job refresh failed: %s", exc)
-        await asyncio.sleep(max(0.25, hours) * 3600)
+async def enrich_jobs(job_ids: list[int]) -> int:
+    """Run the email finder for postings that still lack a recruiter email."""
+    from .email_finder import get_service
+
+    service = get_service()
+    found = 0
+    db = SessionLocal()
+    try:
+        for job_id in job_ids:
+            job = db.get(JobPosting, job_id)
+            if job is None or job.recruiter_email:
+                continue
+            try:
+                candidates = await service.find(name=job.recruiter_name, company=job.company, job_url=job.url)
+            except Exception as exc:  # noqa: BLE001 - one bad site must not stop the batch
+                log.warning("enrich failed for job %s: %s", job_id, exc)
+                continue
+            if candidates:
+                job.recruiter_email = candidates[0].email
+                db.commit()
+                found += 1
+    finally:
+        db.close()
+    return found

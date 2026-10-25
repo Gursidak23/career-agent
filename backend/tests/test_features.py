@@ -49,8 +49,6 @@ def env(tmp_path, monkeypatch):
             s.close()
 
     app.dependency_overrides[get_db] = _db
-    # Background sends open their own session.
-    monkeypatch.setattr(outreach_router, "SessionLocal", factory)
     try:
         yield TestClient(app), factory
     finally:
@@ -127,20 +125,24 @@ def test_tracker_create_is_idempotent_and_status_stamps_dates(env):
     assert client.post("/api/applications", json={}).status_code == 422
 
 
-def test_send_skips_repeats_and_marks_card_contacted(env, monkeypatch):
-    client, factory = env
+@pytest.mark.asyncio
+async def test_send_skips_repeats_and_marks_card_contacted(system, monkeypatch):
+    client, factory, drain = system
     _, good_id, _ = _seed(factory)
 
     async def fake_send(items, **kwargs):
         return [SendResult(to_email=str(i.to_email), status="sent") for i in items]
 
-    monkeypatch.setattr(outreach_router, "send_batch", fake_send)
+    monkeypatch.setattr("app.outreach.email_sender.send_batch", fake_send)
+    monkeypatch.setattr("app.outreach.email_sender.smtp_configured", lambda smtp=None: True)
     monkeypatch.setattr(outreach_router, "smtp_configured", lambda: True)
     item = {"to_email": "hr@globex.com", "subject": "Hi", "body": "Hello", "company": "Globex",
             "role": "Backend Engineer", "job_id": good_id}
 
     first = client.post("/api/outreach/send", json={"items": [item]}).json()
     assert first["queued"] == 1
+    assert client.get("/api/applications").json() == []  # nothing sent until the worker runs
+    assert await drain() == 1
     card = client.get("/api/applications").json()[0]
     assert card["status"] == "contacted" and card["recruiter_email"] == "hr@globex.com"
     assert card["emails_sent"] == 1 and card["contacted_at"]
@@ -152,20 +154,22 @@ def test_send_skips_repeats_and_marks_card_contacted(env, monkeypatch):
     assert forced["queued"] == 1
 
 
-def test_contacted_never_moves_a_card_backwards(env, monkeypatch):
-    client, factory = env
+@pytest.mark.asyncio
+async def test_contacted_never_moves_a_card_backwards(system, monkeypatch):
+    client, factory, drain = system
     _, good_id, _ = _seed(factory)
-    a = client.post("/api/applications", json={"job_id": good_id, "status": "interview"}).json()
+    client.post("/api/applications", json={"job_id": good_id, "status": "interview"})
 
     async def fake_send(items, **kwargs):
         return [SendResult(to_email=str(i.to_email), status="sent") for i in items]
 
-    monkeypatch.setattr(outreach_router, "send_batch", fake_send)
+    monkeypatch.setattr("app.outreach.email_sender.send_batch", fake_send)
+    monkeypatch.setattr("app.outreach.email_sender.smtp_configured", lambda smtp=None: True)
     monkeypatch.setattr(outreach_router, "smtp_configured", lambda: True)
     client.post("/api/outreach/send", json={"items": [
         {"to_email": "hr@globex.com", "subject": "s", "body": "b", "job_id": good_id}]})
+    await drain()
     assert client.get("/api/applications").json()[0]["status"] == "interview"
-    assert a["id"]
 
 
 # -------------------------------------------------------------------- review --

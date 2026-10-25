@@ -49,6 +49,7 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
   const [queue, setQueue] = usePersistentState<SendItem[]>("ca.emailQueue", []);
   const [dryRun, setDryRun] = useState(true);
   const [allowRepeat, setAllowRepeat] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [tailorings, setTailorings] = useState<TailoringSummary[]>([]);
   const [sends, setSends] = useState<EmailLogOut[]>([]);
   const [candidates, setCandidates] = useState<EmailCandidateOut[]>([]);
@@ -69,6 +70,7 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
 
   useEffect(() => {
     api.tailorings().then(setTailorings).catch(() => {});
+    api.health().then((h) => setPaused(h.automation_paused)).catch(() => {});
     loadSends();
     api.linkedinStatus().then(setLiStatus).catch(() => {});
     loadLiSends();
@@ -239,7 +241,9 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
         const ok = res.results.length - skipped.length;
         toast.ok(`Test run: ${ok} email(s) look valid. Nothing was sent.`);
       } else {
-        if (res.queued) toast.ok(`Sending ${res.queued} email(s)… watch the status below.`);
+        const later = res.results.filter((r) => r.status === "scheduled").length;
+        if (res.queued - later) toast.ok(`Queued ${res.queued - later} email(s); the worker sends them, paced. Watch the status below.`);
+        if (later) toast.warn(`${later} email(s) are over today's limit and will go out tomorrow morning.`);
         // Keep skipped ones queued so they can be re-sent with Allow repeats.
         const skippedTo = new Set(skipped.map((s) => s.to_email.toLowerCase()));
         setQueue(queue.filter((q) => skippedTo.has(q.to_email.toLowerCase())));
@@ -524,6 +528,13 @@ export default function Outreach({ status }: { status: SettingsStatus | null }) 
               </button>
             )}
           </div>
+          {paused && (
+            <div className="callout warn">
+              <span>
+                Sending is paused. Emails stay queued until you resume them on the <Link to="/system">System</Link> page.
+              </span>
+            </div>
+          )}
           {!smtpReady && (
             <div className="callout warn">
               <span>

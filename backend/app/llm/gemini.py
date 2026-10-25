@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 from ..config import LlmSettings
-from .base import ChatMessage, LlmError
+from .base import ChatMessage, LlmError, report_usage
 
 
 def _to_gemini(messages: list[ChatMessage]) -> tuple[str | None, list[dict[str, Any]]]:
@@ -69,4 +69,10 @@ class GeminiClient:
             ) from exc
         except Exception as exc:  # noqa: BLE001 - normalize provider errors
             raise LlmError(f"Gemini error: {exc}") from exc
+        usage = getattr(resp, "usage_metadata", None)
+        if usage is not None:
+            report_usage(
+                getattr(usage, "prompt_token_count", None),
+                (getattr(usage, "candidates_token_count", None) or 0) + (getattr(usage, "thoughts_token_count", None) or 0),
+            )
         return resp.text or ""

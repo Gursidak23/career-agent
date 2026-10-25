@@ -2,45 +2,23 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..db import SessionLocal, get_db
+from ..db import get_db
 from ..logging_setup import get_logger
 from ..models import Application, JobPosting, Resume
-from ..outreach.email_finder import get_service
 from ..outreach.filters import EXPERIENCE_LEVELS, JOB_TYPES, build_job_query
 from ..outreach.job_feed import ingest
 from ..outreach.matching import match_job, resume_lower
 from ..outreach.scraper import source_names
 from ..schemas import JobOut, JobRefreshRequest, ResumeData
+from ..system import events
+from ..tasks import enqueue
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 log = get_logger(__name__)
-
-
-async def _enrich_jobs(job_ids: list[int]) -> None:
-    """Background: run the email finder for jobs missing a recruiter email."""
-    service = get_service()
-    db = SessionLocal()
-    try:
-        for job_id in job_ids:
-            job = db.get(JobPosting, job_id)
-            if job is None or job.recruiter_email:
-                continue
-            try:
-                candidates = await service.find(
-                    name=job.recruiter_name, company=job.company, job_url=job.url
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("enrich failed for job %s: %s", job_id, exc)
-                continue
-            if candidates:
-                job.recruiter_email = candidates[0].email
-                db.commit()
-    finally:
-        db.close()
 
 
 @router.get("/meta")
@@ -115,7 +93,6 @@ def get_job(job_id: int, db: Session = Depends(get_db)) -> JobPosting:
 @router.post("/refresh", response_model=list[JobOut])
 def refresh(
     req: JobRefreshRequest,
-    background: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> list[JobOut]:
     try:
@@ -125,10 +102,12 @@ def refresh(
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    events.record("jobs.fetched", f"Fetched {len(touched)} job(s) from {req.source} ({len(new_ids)} new)", db=db)
     if req.enrich_emails:
         missing = [job.id for job in touched if not job.recruiter_email]
         if missing:
-            background.add_task(_enrich_jobs, missing)
+            enqueue(db, "enrich_emails", {"job_ids": missing})
+    db.commit()
 
     out = []
     for job in touched:

@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..db import SessionLocal, get_db
+from ..db import get_db
 from ..logging_setup import get_logger
 from ..models import LinkedInLog
 from ..outreach import linkedin_sender as li
@@ -14,10 +14,10 @@ from ..schemas import (
     LinkedInBatchRequest,
     LinkedInBatchResponse,
     LinkedInLogOut,
-    LinkedInSendItem,
     LinkedInStatus,
     SendResult,
 )
+from ..tasks import enqueue
 
 router = APIRouter(prefix="/api/linkedin", tags=["linkedin"])
 log = get_logger(__name__)
@@ -59,26 +59,8 @@ async def login(background_tasks: BackgroundTasks) -> dict[str, str]:
     }
 
 
-async def _run_send(items: list[LinkedInSendItem], log_ids: list[int]) -> None:
-    results = await li.send_batch(items)
-    db = SessionLocal()
-    try:
-        for log_id, res in zip(log_ids, results, strict=False):
-            row = db.get(LinkedInLog, log_id)
-            if row is not None:
-                row.status = res.status
-                row.error = res.error
-        db.commit()
-    finally:
-        db.close()
-
-
 @router.post("/send", response_model=LinkedInBatchResponse)
-async def send(
-    req: LinkedInBatchRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-) -> LinkedInBatchResponse:
+async def send(req: LinkedInBatchRequest, db: Session = Depends(get_db)) -> LinkedInBatchResponse:
     if not req.items:
         raise HTTPException(status_code=400, detail="No recipients provided")
 
@@ -115,9 +97,15 @@ async def send(
         db.add(row)
         db.flush()
         log_ids.append(row.id)
+    enqueue(
+        db,
+        "linkedin_batch",
+        {"items": [i.model_dump(mode="json") for i in req.items], "log_ids": log_ids},
+        dedupe_key="linkedin:" + ",".join(map(str, log_ids)),
+        outward=True,
+        max_attempts=1,  # DMs must never be re-sent by a blind retry
+    )
     db.commit()
-
-    background_tasks.add_task(_run_send, req.items, log_ids)
 
     results = [SendResult(to_email=str(i.profile_url), status="queued") for i in req.items]
     return LinkedInBatchResponse(results=results, sent=0, failed=0, queued=len(results))

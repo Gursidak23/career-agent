@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
-# career-agent/run.sh — one-shot dev launcher for backend + frontend (macOS/Linux)
+# career-agent/run.sh — start the whole system (macOS/Linux).
+#
+#   ./run.sh          development: API with auto-reload + worker + Vite dev server
+#                     UI at http://127.0.0.1:5173
+#   ./run.sh --prod   production: build the UI once, then API (serving the UI) + worker
+#                     UI at http://127.0.0.1:8000
+#
+# The worker runs separately from the API on purpose: reloading or restarting the
+# API never interrupts a send, a tailoring run, a scheduled fetch or a backup.
 set -euo pipefail
+
+MODE="dev"
+[ "${1:-}" = "--prod" ] && MODE="prod"
 
 # Resolve the directory this script lives in, so it works from anywhere.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,27 +54,41 @@ if [ ! -d "node_modules" ]; then
   echo "==> Installing frontend dependencies (npm install)"
   npm install
 fi
+if [ "$MODE" = "prod" ]; then
+  echo "==> Building the frontend"
+  npm run build
+fi
 
-# ---------- Run both, shut down together ------
+# ---------- Run everything, shut down together ------
 PIDS=()
 cleanup() {
   echo ""
-  echo "==> Shutting down..."
+  echo "==> Shutting down (the worker finishes running tasks first)..."
   for pid in "${PIDS[@]:-}"; do
     kill "$pid" 2>/dev/null || true
   done
+  wait 2>/dev/null || true
 }
 trap cleanup INT TERM EXIT
 
-echo "==> Starting backend  -> http://127.0.0.1:8000  (docs at /docs)"
 cd "$BACKEND_DIR"
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000 &
+echo "==> Starting worker (background tasks, schedules, backups)"
+career-agent worker &
 PIDS+=("$!")
 
-echo "==> Starting frontend -> http://127.0.0.1:5173"
-cd "$FRONTEND_DIR"
-npm run dev &
-PIDS+=("$!")
+if [ "$MODE" = "prod" ]; then
+  echo "==> Starting API + UI -> http://127.0.0.1:8000"
+  career-agent api --prod &
+  PIDS+=("$!")
+else
+  echo "==> Starting API -> http://127.0.0.1:8000  (docs at /docs)"
+  career-agent api &
+  PIDS+=("$!")
+  echo "==> Starting frontend -> http://127.0.0.1:5173"
+  cd "$FRONTEND_DIR"
+  npm run dev &
+  PIDS+=("$!")
+fi
 
-echo "==> Both running. Press Ctrl+C to stop."
+echo "==> Running ($MODE). Press Ctrl+C to stop."
 wait

@@ -2,6 +2,7 @@ import pytest
 
 from app.config import LlmSettings
 from app.llm import LlmError
+from app.llm import copilot as copilot_module
 from app.llm.base import ChatMessage
 from app.llm.copilot import CopilotClient
 from app.llm.router import _build_clients
@@ -27,6 +28,9 @@ class _FakeSession:
     async def disconnect(self):
         self.disconnected = True
 
+    def on(self, callback):
+        self.callback = callback
+
 
 class _FakeSdk:
     def __init__(self, session: _FakeSession) -> None:
@@ -36,6 +40,12 @@ class _FakeSdk:
     async def create_session(self, **kwargs):
         self.kwargs = kwargs
         return self.session
+
+
+@pytest.fixture(autouse=True)
+def _no_spend(monkeypatch):
+    # Keep the budget check off the real usage ledger.
+    monkeypatch.setattr(copilot_module, "credits_today", lambda: 0.0)
 
 
 def _client(sdk: _FakeSdk, **settings) -> CopilotClient:
@@ -76,6 +86,15 @@ async def test_errors_normalized_and_session_closed():
 async def test_missing_token_raises_llm_error():
     with pytest.raises(LlmError, match="not configured"):
         await CopilotClient(LlmSettings()).complete(_MSGS, temperature=0.2, max_tokens=100)
+
+
+@pytest.mark.asyncio
+async def test_daily_budget_blocks_copilot(monkeypatch):
+    monkeypatch.setattr(copilot_module, "credits_today", lambda: 3.5)
+    sdk = _FakeSdk(_FakeSession("never"))
+    with pytest.raises(LlmError, match="budget reached"):
+        await _client(sdk, copilot_daily_credit_budget=3.0).complete(_MSGS, temperature=0.2, max_tokens=10)
+    assert sdk.kwargs == {}  # no session was even opened
 
 
 def test_copilot_is_last_in_chain():

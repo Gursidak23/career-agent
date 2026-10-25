@@ -1,3 +1,4 @@
+from app.resume.ats import extract_jd_keywords, score_resume
 from app.schemas import (
     ContactInfo,
     EducationItem,
@@ -5,7 +6,6 @@ from app.schemas import (
     ProjectItem,
     ResumeData,
 )
-from app.resume.ats import extract_jd_keywords, score_resume
 
 
 def _strong_resume() -> ResumeData:

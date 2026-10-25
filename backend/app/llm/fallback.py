@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 
 from ..logging_setup import get_logger
-from .base import ChatMessage, LlmClient, LlmError
+from .base import ChatMessage, LlmClient, LlmError, current_call
 
 log = get_logger(__name__)
 
@@ -44,19 +44,27 @@ class FallbackLlmClient:
         json_mode: bool = False,
     ) -> str:
         last_error: Exception | None = None
+        info = current_call()
         for position, client in enumerate(self._clients):
             for attempt in range(self._max_retries):
                 try:
-                    return await client.complete(
+                    text = await client.complete(
                         messages,
                         temperature=temperature,
                         max_tokens=max_tokens,
                         json_mode=json_mode,
                     )
+                    info.provider = client.name
+                    return text
                 except Exception as exc:  # noqa: BLE001 - retry/fail over on any error
                     last_error = exc
+                    # Budget/config refusals won't change on retry.
+                    if "budget" in str(exc).lower() or "not configured" in str(exc).lower():
+                        break
                     if attempt + 1 < self._max_retries:
                         await asyncio.sleep(0.5 * (2**attempt))
+            info.errors.append(f"{client.name}: {last_error}")
+            info.fallbacks += 1
             if position + 1 < len(self._clients):
                 nxt = self._clients[position + 1]
                 log.warning("llm fallback %s -> %s (%s)", client.name, nxt.name, last_error)

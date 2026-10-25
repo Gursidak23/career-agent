@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 from functools import lru_cache
 
+from ...config import get_settings
+from ...logging_setup import get_logger
 from .agentql import AgentQLFinder
 from .apify import ApifyFinder
 from .base import GRADE_VERIFIED, EmailCandidate, EmailFinder
@@ -17,8 +19,6 @@ from .crawler import CrawlerFinder
 from .domain import resolve_domain
 from .patterns import PatternFinder
 from .verify import verify_email
-from ...config import get_settings
-from ...logging_setup import get_logger
 
 log = get_logger(__name__)
 

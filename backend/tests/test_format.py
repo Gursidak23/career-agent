@@ -139,6 +139,7 @@ def test_lock_facts_restores_facts_and_drops_fabrication():
     assert exp.bullets[0] == "Engineered the OrderBot service in Python, cutting latency by 40% for 12 teams."
     assert exp.bullets[1] == "Migrated reports to PostgreSQL."
     assert "Kubernetes" not in out.skills and "Go" not in out.skills and "Rust" not in out.skills
+    assert "Python" in out.skills and "python" not in out.skills
     assert out.certifications == original.certifications
     assert out.section_order == original.section_order
     # Both rewrites are offered for review; the clean one applied, the other held back.

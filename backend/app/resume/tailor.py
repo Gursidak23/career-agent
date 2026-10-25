@@ -165,6 +165,7 @@ def lock_facts(original: ResumeData, candidate: ResumeData) -> tuple[ResumeData,
     casing = _casing_map(original)
     evidence = resume_text(original).lower()
     known = {s.lower() for s in original.skills}
+    spelling = {s.lower(): s for s in original.skills}
     reviews: list[BulletReview] = []
 
     def truthful(skills: list[str]) -> list[str]:
@@ -172,6 +173,8 @@ def lock_facts(original: ResumeData, candidate: ResumeData) -> tuple[ResumeData,
         out = []
         for s in skills:
             s = _recase(s.strip(), casing)
+            # Keep the original's spelling; start new list items with a capital.
+            s = spelling.get(s.lower()) or (s[:1].upper() + s[1:] if s.islower() else s)
             if s and s.lower() not in seen and (s.lower() in known or mentions(s, evidence)):
                 seen.add(s.lower())
                 out.append(s)
@@ -295,7 +298,7 @@ async def _one_candidate(
 ) -> Candidate | str:
     """Generate and score a single tailored candidate; the error message on failure."""
     try:
-        data = await complete_json(_TAILOR_SYSTEM, prompt, temperature=temperature, max_tokens=8192)
+        data = await complete_json(_TAILOR_SYSTEM, prompt, temperature=temperature, max_tokens=8192, purpose="tailor")
         candidate, reviews = lock_facts(original, ResumeData.model_validate(data))
     except (LlmError, ValueError, TypeError) as exc:
         log.warning("tailoring candidate failed: %s", exc)

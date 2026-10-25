@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -165,3 +165,77 @@ class EmailLog(Base):
     message_id: Mapped[int | None] = mapped_column(
         ForeignKey("outreach_messages.id", ondelete="SET NULL"), nullable=True
     )
+
+
+class Task(Base):
+    """Durable background work (sends, tailoring, fetches, backups).
+
+    Runs in the worker process, survives restarts, retries with backoff, and a
+    dedupe_key keeps a double-click or a retried request from doing it twice.
+    """
+
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+    kind: Mapped[str] = mapped_column(String(64), index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    # queued | running | succeeded | failed | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    run_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    locked_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    progress: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Outward-facing tasks (emails, DMs) wait while automation is paused.
+    outward: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Event(Base):
+    """Append-only audit trail: what the system did, and why."""
+
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    kind: Mapped[str] = mapped_column(String(64), index=True)  # e.g. email.sent
+    level: Mapped[str] = mapped_column(String(8), default="info")  # info | warn | error
+    message: Mapped[str] = mapped_column(Text, default="")
+    data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class LlmCall(Base):
+    """One AI completion: who served it, how fast, and what it cost."""
+
+    __tablename__ = "llm_calls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    purpose: Mapped[str] = mapped_column(String(32), default="other")
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)  # None = all failed
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Copilot bills in AI credits; free providers record 0.
+    credits: Mapped[float] = mapped_column(Float, default=0.0)
+    fallbacks: Mapped[int] = mapped_column(Integer, default=0)  # providers that failed first
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SystemState(Base):
+    """Small key/value store: worker heartbeat, automation pause, last backup."""
+
+    __tablename__ = "system_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+

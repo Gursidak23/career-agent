@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..db import SessionLocal, get_db
+from ..db import get_db
 from ..models import EmailLog, JobPosting, OutreachMessage, Tailoring
 from ..outreach.email_sender import send_batch, smtp_configured
 from ..outreach.messages import generate_messages
+from ..outreach.sending import emails_counted_today, next_send_time, tomorrow_morning
 from ..resume.naming import resume_filename
 from ..schemas import (
     BatchSendRequest,
@@ -26,7 +28,8 @@ from ..schemas import (
     SendItem,
     SendResult,
 )
-from .applications import advance, track
+from ..system import events
+from ..tasks import enqueue
 
 router = APIRouter(prefix="/api/outreach", tags=["outreach"])
 
@@ -117,43 +120,14 @@ def _attachment_name(db: Session, item: SendItem, path: Path) -> str:
     return resume_filename(name, tailoring.role if tailoring else "", path.suffix)
 
 
-async def _run_send(
-    items: list[SendItem],
-    log_ids: list[int],
-    attachments: list[str | None],
-    attachment_names: list[str | None],
-) -> None:
-    """Background task: send emails and update their EmailLog rows."""
-    att_paths = [Path(p) if p else None for p in attachments]
-    results = await send_batch(items, attachments=att_paths, attachment_names=attachment_names)
-    db = SessionLocal()
-    try:
-        for log_id, res, item in zip(log_ids, results, items, strict=False):
-            row = db.get(EmailLog, log_id)
-            if row is not None:
-                row.status = res.status
-                row.error = res.error
-            if res.status == "sent" and (item.job_id or (item.company and item.role)):
-                card = track(
-                    db,
-                    job_id=item.job_id,
-                    company=item.company or "",
-                    role=item.role or "",
-                    tailoring_id=item.tailoring_id,
-                )
-                card.recruiter_email = str(item.to_email)
-                advance(card, "contacted")
-        db.commit()
-    finally:
-        db.close()
-
-
 @router.post("/send", response_model=BatchSendResponse)
-async def send(
-    req: BatchSendRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-) -> BatchSendResponse:
+async def send(req: BatchSendRequest, db: Session = Depends(get_db)) -> BatchSendResponse:
+    """Validate, then queue one durable send task per email.
+
+    The worker sends them: paced to SMTP per_minute, kept out of quiet hours,
+    and past the daily cap moved to tomorrow morning. A send survives API and
+    worker restarts and retries on transient SMTP errors.
+    """
     if not req.items:
         raise HTTPException(status_code=400, detail="No recipients provided")
 
@@ -183,26 +157,45 @@ async def send(
             detail="SMTP is not configured. Set CAREER_SMTP__HOST/USERNAME/PASSWORD.",
         )
 
-    # Create pending log rows up front so the UI can poll /sends for progress.
-    log_ids: list[int] = []
-    attachments: list[str | None] = []
-    attachment_names: list[str | None] = []
-    for item in req.items:
+    smtp = get_settings().smtp
+    spacing = timedelta(seconds=60 / max(1, smtp.per_minute))
+    start = next_send_time()
+    used = emails_counted_today(db)
+    results: list[SendResult] = []
+    for i, item in enumerate(req.items):
         att = _attachment_for(db, item)
-        attachments.append(str(att) if att else None)
-        attachment_names.append(_attachment_name(db, item, att) if att else None)
-        row = EmailLog(
-            to_email=str(item.to_email), subject=item.subject, status="pending", job_id=item.job_id
-        )
+        row = EmailLog(to_email=str(item.to_email), subject=item.subject, status="pending", job_id=item.job_id)
         db.add(row)
         db.flush()
-        log_ids.append(row.id)
+        over_cap = used + i >= smtp.daily_cap
+        run_at = (tomorrow_morning() if over_cap else start) + spacing * i
+        enqueue(
+            db,
+            "send_email",
+            {
+                "log_id": row.id,
+                "item": item.model_dump(mode="json"),
+                "attachment": str(att) if att else None,
+                "attachment_name": _attachment_name(db, item, att) if att else None,
+            },
+            dedupe_key=f"email:{row.id}",
+            run_at=run_at,
+            outward=True,
+        )
+        if over_cap:
+            results.append(
+                SendResult(
+                    to_email=str(item.to_email),
+                    status="scheduled",
+                    error=f"Daily cap of {smtp.daily_cap} reached; sends tomorrow morning",
+                )
+            )
+        else:
+            results.append(SendResult(to_email=str(item.to_email), status="queued"))
+    events.record("email.queued", f"Queued {len(req.items)} email(s)", db=db)
     db.commit()
-
-    background_tasks.add_task(_run_send, req.items, log_ids, attachments, attachment_names)
-
-    results = [SendResult(to_email=str(i.to_email), status="queued") for i in req.items]
-    return BatchSendResponse(results=skipped + results, sent=0, failed=0, queued=len(results))
+    queued = sum(r.status in ("queued", "scheduled") for r in results)
+    return BatchSendResponse(results=skipped + results, sent=0, failed=0, queued=queued)
 
 
 def _history(db: Session, email: str) -> ContactHistory:

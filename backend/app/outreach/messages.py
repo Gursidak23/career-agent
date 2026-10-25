@@ -82,7 +82,7 @@ def _unwrap(data: object) -> object:
 async def generate_messages(req: MessageGenRequest) -> tuple[list[GeneratedMessage], str | None]:
     """Return ``(messages, warning)``; ``warning`` is set when the template fallback was used."""
     try:
-        data = await complete_json(_SYSTEM, _user_prompt(req), temperature=0.5, max_tokens=4096)
+        data = await complete_json(_SYSTEM, _user_prompt(req), temperature=0.5, max_tokens=4096, purpose="outreach")
         data = _unwrap(data)
         if isinstance(data, list):
             out = [GeneratedMessage.model_validate(m) for m in data if isinstance(m, dict)]

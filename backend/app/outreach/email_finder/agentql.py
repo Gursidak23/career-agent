@@ -11,10 +11,10 @@ import json
 
 import httpx
 
-from .base import EMAIL_RE, EmailCandidate
-from .domain import candidate_domains
 from ...config import get_settings
 from ...logging_setup import get_logger
+from .base import EMAIL_RE, EmailCandidate
+from .domain import candidate_domains
 
 log = get_logger(__name__)
 

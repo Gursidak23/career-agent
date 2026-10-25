@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -16,6 +17,42 @@ class ChatMessage:
 
 class LlmError(RuntimeError):
     """Raised when a provider call fails (network, auth, rate limit, timeout)."""
+
+
+@dataclass
+class CallInfo:
+    """Filled in during one completion: who served it and what it used."""
+
+    provider: str | None = None
+    model: str | None = None
+    fallbacks: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    credits: float = 0.0
+    errors: list[str] = field(default_factory=list)
+
+
+# Per-call scratchpad. Context-local, so concurrent candidates don't mix.
+_CALL: ContextVar[CallInfo | None] = ContextVar("llm_call", default=None)
+
+
+def current_call() -> CallInfo:
+    """The CallInfo of the completion in progress (a throwaway one outside a call)."""
+    return _CALL.get() or CallInfo()
+
+
+def start_call() -> tuple[CallInfo, object]:
+    info = CallInfo()
+    return info, _CALL.set(info)
+
+
+def end_call(token: object) -> None:
+    _CALL.reset(token)  # type: ignore[arg-type]
+
+
+def report_usage(input_tokens: int | None, output_tokens: int | None, credits: float = 0.0) -> None:
+    info = current_call()
+    info.input_tokens, info.output_tokens, info.credits = input_tokens, output_tokens, credits
 
 
 @runtime_checkable

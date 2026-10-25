@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import time
+from datetime import date
 from functools import lru_cache
 from typing import Any
 
 from ..config import LlmSettings, get_settings
-from .base import ChatMessage, LlmClient, extract_json
+from ..logging_setup import get_logger
+from .base import CallInfo, ChatMessage, LlmClient, end_call, extract_json, start_call
 from .cache import LlmCache, make_key
 from .copilot import CopilotClient
 from .fallback import FallbackLlmClient
@@ -103,6 +106,7 @@ async def complete(
     temperature: float | None = None,
     max_tokens: int | None = None,
     json_mode: bool = False,
+    purpose: str = "other",
 ) -> str:
     llm = get_settings().llm
     client = get_llm()
@@ -119,14 +123,65 @@ async def complete(
         return cached
 
     await get_bucket().acquire()
-    text = await client.complete(
-        [ChatMessage("system", system), ChatMessage("user", user)],
-        temperature=temp,
-        max_tokens=tokens,
-        json_mode=json_mode,
-    )
+    info, token = start_call()
+    started = time.perf_counter()
+    try:
+        text = await client.complete(
+            [ChatMessage("system", system), ChatMessage("user", user)],
+            temperature=temp,
+            max_tokens=tokens,
+            json_mode=json_mode,
+        )
+    except Exception as exc:
+        _record(info, purpose, started, error=str(exc))
+        raise
+    finally:
+        end_call(token)
+    _record(info, purpose, started)
     cache.set(key, text)
     return text
+
+
+_log = get_logger(__name__)
+_paid_fallback_day: date | None = None
+
+
+def _record(info: CallInfo, purpose: str, started: float, error: str | None = None) -> None:
+    """Write the call to the usage ledger; flag a fallback onto the paid provider once a day."""
+    global _paid_fallback_day
+    from ..db import SessionLocal
+    from ..models import LlmCall
+    from ..system import events
+
+    llm = get_settings().llm
+    try:
+        with SessionLocal() as db:
+            db.add(
+                LlmCall(
+                    purpose=purpose,
+                    provider=info.provider,
+                    model=_provider_model(info.provider, llm) if info.provider else None,
+                    ok=error is None,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    input_tokens=info.input_tokens,
+                    output_tokens=info.output_tokens,
+                    credits=info.credits,
+                    fallbacks=info.fallbacks,
+                    error=(error or "; ".join(info.errors) or None),
+                )
+            )
+            db.commit()
+    except Exception as exc:  # noqa: BLE001 - the ledger must never break a completion
+        _log.warning("could not record LLM usage: %s", exc)
+    if error is not None:
+        events.record("llm.failed", f"All AI providers failed for {purpose}: {error[:300]}", level="error")
+    elif info.provider == "copilot" and info.fallbacks and _paid_fallback_day != date.today():
+        _paid_fallback_day = date.today()
+        events.record(
+            "llm.paid_fallback",
+            f"Free AI providers failed, so {purpose} used paid Copilot. First failure: {info.errors[0][:300]}",
+            level="warn",
+        )
 
 
 async def complete_json(
@@ -135,9 +190,10 @@ async def complete_json(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    purpose: str = "other",
 ) -> Any:
     """Run a completion in native JSON mode and parse the response."""
     text = await complete(
-        system, user, temperature=temperature, max_tokens=max_tokens, json_mode=True
+        system, user, temperature=temperature, max_tokens=max_tokens, json_mode=True, purpose=purpose
     )
     return extract_json(text)

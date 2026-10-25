@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
@@ -9,14 +13,13 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import get_db
-from ..models import JobPosting, Resume, Tailoring
+from ..models import Resume, Tailoring
 from ..resume.ats import score_resume
-from ..resume.docx_render import render_docx
-from ..resume.latex import render_pdf
 from ..resume.naming import resume_filename
 from ..resume.parser import extract_text, pdf_layout, structure_resume
 from ..resume.roles import ROLES, get_role
-from ..resume.tailor import apply_reviews, tailor_resume
+from ..resume.service import render_files
+from ..resume.tailor import apply_reviews
 from ..schemas import (
     AtsReport,
     BulletReview,
@@ -27,11 +30,22 @@ from ..schemas import (
     TailoringSummary,
     TailorRequest,
     TailorResponse,
+    TaskOut,
     UploadResponse,
 )
-from .applications import track
+from ..tasks import enqueue
+from ..tasks.api import task_out
 
 router = APIRouter(prefix="/api/resume", tags=["resume"])
+
+
+def _upload_path(resume_id: int) -> Path:
+    return get_settings().uploads_path / f"resume_{resume_id}.pdf"
+
+
+def _save_upload(resume_id: int, content: bytes) -> None:
+    """Keep the original PDF so it can be checked (ATS read-back, scan) like outputs."""
+    _upload_path(resume_id).write_bytes(content)
 
 
 def _is_complete(parsed: dict | None) -> bool:
@@ -86,18 +100,6 @@ def _tailor_response(
     )
 
 
-def _render_files(tailoring: Tailoring, resume: ResumeData) -> None:
-    """(Re)write the PDF (or .tex without Tectonic) and the .docx for a tailoring."""
-    out_dir = get_settings().output_path
-    stem = f"resume_{tailoring.id}"
-    render = render_pdf(resume, out_dir, stem=stem)
-    try:
-        render_docx(resume, out_dir, stem=stem)
-    except Exception:  # noqa: BLE001, S110 - docx is a best-effort extra format
-        pass
-    tailoring.pdf_path = str(render.pdf_path) if render.pdf_path else str(render.tex_path)
-
-
 @router.get("/roles")
 def list_roles() -> list[dict[str, str]]:
     return [{"key": p.key, "label": p.label} for p in ROLES.values()]
@@ -140,6 +142,7 @@ async def upload_resume(
         select(Resume).where(Resume.raw_text == raw_text).order_by(Resume.id.desc())
     ).first()
     if previous is not None and _is_complete(previous.parsed):
+        _save_upload(previous.id, content)
         return _upload_response(previous, reused=True)
 
     parsed, warning = await structure_resume(raw_text, pdf_layout(content))
@@ -151,6 +154,7 @@ async def upload_resume(
     db.add(resume)
     db.commit()
     db.refresh(resume)
+    _save_upload(resume.id, content)
     return _upload_response(resume, warning=warning)
 
 
@@ -159,45 +163,23 @@ async def score(req: ScoreRequest) -> AtsReport:
     return score_resume(req.resume, req.role, req.job_description)
 
 
-@router.post("/tailor", response_model=TailorResponse)
-async def tailor(req: TailorRequest, db: Session = Depends(get_db)) -> TailorResponse:
+@router.post("/tailor", response_model=TaskOut, status_code=202)
+def tailor(req: TailorRequest, db: Session = Depends(get_db)) -> TaskOut:
+    """Queue a tailoring run; poll GET /api/tasks/{id} for the result.
+
+    Runs in the worker, so it survives page reloads and API restarts, and a
+    double-click while one is running returns the same task.
+    """
     resume = db.get(Resume, req.resume_id)
     if resume is None:
         raise HTTPException(status_code=404, detail="Resume not found")
     if not resume.parsed:
         raise HTTPException(status_code=422, detail="Resume has no parsed data")
-
-    base = ResumeData.model_validate(resume.parsed)
-    result = await tailor_resume(
-        base,
-        req.role,
-        req.job_description,
-        target_score=req.target_score,
-        max_iterations=req.max_iterations,
-    )
-
-    tailoring = Tailoring(
-        resume_id=resume.id,
-        role=req.role,
-        job_description=req.job_description,
-        job_id=req.job_id,
-        tailored=result.resume.model_dump(),
-        ats_score=result.report.score,
-        ats_report=result.report.model_dump(),
-        reviews=[r.model_dump() for r in result.reviews],
-    )
-    db.add(tailoring)
+    payload = req.model_dump()
+    key = "tailor:" + hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
+    task = enqueue(db, "tailor", payload, dedupe_key=key, active_only=True, max_attempts=2)
     db.commit()
-    db.refresh(tailoring)
-
-    _render_files(tailoring, result.resume)
-    if req.job_id and db.get(JobPosting, req.job_id) is not None:
-        # Tailoring to a post means you're pursuing it: put it on the board with
-        # this (newest) resume version.
-        track(db, job_id=req.job_id).tailoring_id = tailoring.id
-    db.commit()
-
-    return _tailor_response(tailoring, iterations=result.iterations, warning=result.warning)
+    return task_out(task)
 
 
 # Declared before "/{resume_id}" so "tailorings" is not parsed as an id.
@@ -248,7 +230,18 @@ def apply_review(
     tailoring.reviews = [r.model_dump() for r in reviews]
     tailoring.ats_score = report.score
     tailoring.ats_report = report.model_dump()
-    _render_files(tailoring, resume)
+    render_files(tailoring, resume)
+    db.commit()
+    return _tailor_response(tailoring)
+
+
+@router.post("/tailorings/{tailoring_id}/render", response_model=TailorResponse)
+def rerender(tailoring_id: int, db: Session = Depends(get_db)) -> TailorResponse:
+    """Re-render PDF/DOCX with the current template (e.g. after an ATS-safety fix)."""
+    tailoring = db.get(Tailoring, tailoring_id)
+    if tailoring is None:
+        raise HTTPException(status_code=404, detail="Tailoring not found")
+    render_files(tailoring, ResumeData.model_validate(tailoring.tailored or {}))
     db.commit()
     return _tailor_response(tailoring)
 

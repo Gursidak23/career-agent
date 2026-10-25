@@ -34,6 +34,8 @@ class LlmSettings(BaseModel):
     copilot_github_token: str | None = None
     copilot_model: str | None = None  # None = the account's default model
     copilot_timeout_seconds: float = 180.0
+    # Stop using Copilot for the day after this many AI credits (-1 = no limit).
+    copilot_daily_credit_budget: float = 3.0
 
     temperature: float = 0.2
     max_output_tokens: int = 4096
@@ -144,6 +146,10 @@ class SmtpSettings(BaseModel):
     use_tls: bool = True
     # Throttle outgoing mail to avoid provider limits / spam flags.
     per_minute: int = 20
+    # At most this many emails per day; extra sends are scheduled for tomorrow.
+    daily_cap: int = 30
+    # Local hours with no sending, e.g. "22-8" (empty = send any time).
+    quiet_hours: str = ""
 
 
 class Settings(BaseSettings):
@@ -158,6 +164,13 @@ class Settings(BaseSettings):
     app_name: str = "Career Agent"
     log_level: str = "INFO"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+
+    # When set, every /api request must carry this token (Authorization: Bearer
+    # or the ca_token cookie). Required to listen on anything but localhost.
+    api_token: str | None = None
+    # Production mode: the API also serves the built frontend (one process).
+    serve_frontend: bool = False
+    frontend_dist: str = "../frontend/dist"
 
     db_url: str = "sqlite:///./career_agent.db"
     data_dir: str = "./data"

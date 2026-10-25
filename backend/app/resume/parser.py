@@ -153,6 +153,7 @@ async def structure_resume(
             f"{SCHEMA_HINT}\n\n{_PARSE_RULES}\n\nRESUME TEXT:\n\"\"\"\n{raw_text}\n\"\"\"",
             temperature=0.0,
             max_tokens=8192,
+            purpose="parse",
         )
         if isinstance(data, dict):
             parsed = ResumeData.model_validate(data)

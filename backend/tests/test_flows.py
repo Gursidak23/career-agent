@@ -39,7 +39,9 @@ def _parsed() -> ResumeData:
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
+    # Uploaded PDFs go to a temp dir, never the real data folder.
+    monkeypatch.setattr(resume_router, "_upload_path", lambda rid: tmp_path / f"upload_{rid}.pdf")
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)

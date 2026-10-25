@@ -14,7 +14,28 @@ import asyncio
 from typing import Any
 
 from ..config import LlmSettings, get_settings
-from .base import ChatMessage, LlmError
+from .base import ChatMessage, LlmError, report_usage
+
+
+def credits_today() -> float:
+    """Copilot AI credits spent since local midnight, from the usage ledger."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import func, select
+
+    from ..db import SessionLocal
+    from ..models import LlmCall
+
+    midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    since = midnight.astimezone(timezone.utc).replace(tzinfo=None)
+    try:
+        with SessionLocal() as db:
+            total = db.scalar(
+                select(func.sum(LlmCall.credits)).where(LlmCall.provider == "copilot", LlmCall.created_at >= since)
+            )
+    except Exception:  # noqa: BLE001 - no ledger yet (e.g. first start): don't block
+        return 0.0
+    return float(total or 0.0)
 
 
 def _deny_all(request: Any, invocation: Any) -> Any:
@@ -65,6 +86,10 @@ class CopilotClient:
         max_tokens: int,
         json_mode: bool = False,
     ) -> str:
+        budget = self._settings.copilot_daily_credit_budget
+        spent = credits_today()
+        if budget >= 0 and spent >= budget:
+            raise LlmError(f"Copilot daily budget reached ({spent:.2f}/{budget:g} AI credits)")
         system = "\n\n".join(m.content for m in messages if m.role == "system")
         prompt = "\n\n".join(m.content for m in messages if m.role != "system")
         if json_mode:
@@ -77,12 +102,20 @@ class CopilotClient:
                 system_message={"mode": "replace", "content": system},
                 available_tools=[],
             )
+            usage: list = []
+            session.on(lambda e: usage.append(e.data) if type(e.data).__name__ == "AssistantUsageData" else None)
             try:
                 resp = await session.send_and_wait(
                     prompt, timeout=self._settings.copilot_timeout_seconds
                 )
             finally:
                 await session.disconnect()
+            nano = sum(getattr(getattr(u, "copilot_usage", None), "total_nano_aiu", 0) or 0 for u in usage)
+            report_usage(
+                sum(u.input_tokens or 0 for u in usage) or None,
+                sum(u.output_tokens or 0 for u in usage) or None,
+                nano / 1e9,
+            )
         except LlmError:
             raise
         except Exception as exc:  # noqa: BLE001 - normalize provider errors

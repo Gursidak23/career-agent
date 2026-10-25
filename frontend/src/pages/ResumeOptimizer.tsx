@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   api,
   errorMessage,
+  waitForTask,
   type AtsReport,
   type BulletReview,
   type JobOut,
@@ -14,6 +15,7 @@ import {
   type UploadResponse,
 } from "../api/client";
 import AtsReportView from "../components/AtsReportView";
+import { EvidencePanel, QualityChecks } from "../components/Checks";
 import { useToast } from "../components/Toast";
 import { EmptyState, Icon, Spinner, scoreTone } from "../components/ui";
 import { formatDate, titleCase, useDebounced, useElapsed, usePersistentState } from "../lib/hooks";
@@ -39,8 +41,11 @@ export default function ResumeOptimizer() {
   const [liveScore, setLiveScore] = useState<AtsReport | null>(null);
   const [uploading, setUploading] = useState(false);
   const [tailoring, setTailoring] = useState(false);
+  const [tailorTaskId, setTailorTaskId] = usePersistentState<number | null>("ca.tailorTask", null);
+  const [taskProgress, setTaskProgress] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [checkOriginal, setCheckOriginal] = useState(false);
 
   const uploadSeconds = useElapsed(uploading);
   const tailorSeconds = useElapsed(tailoring);
@@ -136,25 +141,53 @@ export default function ResumeOptimizer() {
 
   async function optimize() {
     if (!resume) return;
-    setTailoring(true);
     try {
-      const res = await api.tailor({
+      const task = await api.tailor({
         resume_id: resume.resume_id,
         role,
         job_description: jd.trim() || undefined,
         job_id: targetJob?.id || undefined,
       });
-      setResult(res);
-      setLastTailoringId(res.tailoring_id);
-      if (res.warning) toast.warn(res.warning);
-      else toast.ok(`Optimized: ATS score ${Math.round(res.ats.score)}.`);
-      api.tailorings(resume.resume_id).then(setHistory).catch(() => {});
+      setTailorTaskId(task.id);
     } catch (e) {
       toast.err(errorMessage(e));
-    } finally {
-      setTailoring(false);
     }
   }
+
+  // Follow the background tailoring task; survives page reloads via tailorTaskId.
+  useEffect(() => {
+    if (tailorTaskId == null) return;
+    let cancelled = false;
+    setTailoring(true);
+    waitForTask(tailorTaskId, (t) => !cancelled && setTaskProgress(t.status === "queued" ? "Waiting for the worker…" : t.progress || null))
+      .then(async (t) => {
+        if (cancelled) return;
+        if (t.status !== "succeeded") {
+          toast.err(t.error ? `Optimizing failed: ${t.error}` : "Optimizing was cancelled.");
+          return;
+        }
+        const id = Number(t.result?.tailoring_id);
+        const res = await api.tailoring(id);
+        if (cancelled) return;
+        setResult(res);
+        setLastTailoringId(id);
+        const warning = t.result?.warning as string | undefined;
+        if (warning) toast.warn(warning);
+        else toast.ok(`Optimized: ATS score ${Math.round(res.ats.score)}.`);
+        api.tailorings(res.resume_id).then(setHistory).catch(() => {});
+      })
+      .catch((e) => !cancelled && toast.err(errorMessage(e)))
+      .finally(() => {
+        if (cancelled) return;
+        setTailoring(false);
+        setTaskProgress(null);
+        setTailorTaskId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tailorTaskId]);
 
   async function openTailoring(id: number) {
     try {
@@ -199,9 +232,14 @@ export default function ResumeOptimizer() {
                 <h2>Your resume</h2>
               </div>
               {p && (
-                <button className="secondary sm" onClick={() => fileInput.current?.click()} disabled={uploading}>
-                  <Icon name="upload" size={15} /> Upload another
-                </button>
+                <div className="inline">
+                  <button className="ghost sm" onClick={() => setCheckOriginal((c) => !c)} aria-expanded={checkOriginal}>
+                    {checkOriginal ? "Hide checks" : "Check original PDF"}
+                  </button>
+                  <button className="secondary sm" onClick={() => fileInput.current?.click()} disabled={uploading}>
+                    <Icon name="upload" size={15} /> Upload another
+                  </button>
+                </div>
               )}
             </div>
 
@@ -306,6 +344,13 @@ export default function ResumeOptimizer() {
             />
           </div>
 
+          {checkOriginal && resume && (
+            <QualityChecks
+              title="Your original PDF"
+              target={{ resumeId: resume.resume_id, role }}
+            />
+          )}
+
           {/* ---------- Step 2: target ---------- */}
           <div className="card">
             <div className="card-header">
@@ -366,16 +411,19 @@ export default function ResumeOptimizer() {
             </div>
           </div>
 
+          {resume && <EvidencePanel resumeId={resume.resume_id} jobDescription={jd} />}
+
           {tailoring && (
             <div className="progress">
               <Spinner size={22} />
               <div style={{ flex: 1 }}>
                 <strong>
-                  {tailorSeconds < 8
+                  {taskProgress ??
+                  (tailorSeconds < 8
                     ? "Rewriting your bullets for this target…"
                     : tailorSeconds < 25
                     ? "Scoring the drafts and keeping the best…"
-                    : "Running another pass to push the score higher…"}
+                    : "Running another pass to push the score higher…")}
                 </strong>
                 <span className="muted small">{tailorSeconds}s · usually under 30 seconds</span>
                 <div className="progress-bar">
@@ -414,6 +462,13 @@ export default function ResumeOptimizer() {
               </div>
 
               <AtsReportView report={result.ats} baseline={result.baseline_score} />
+
+              <QualityChecks
+                key={result.tailoring_id}
+                title="Quality checks for this version"
+                target={{ tailoringId: result.tailoring_id }}
+                onRerender={async () => setResult(await api.rerender(result.tailoring_id))}
+              />
 
               <div className="card callout ok" style={{ alignItems: "center", padding: "14px 18px" }}>
                 <Icon name="outreach" />

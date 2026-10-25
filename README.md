@@ -28,13 +28,60 @@ saying so. (GitHub Models was the third fallback until GitHub retired it on
 ## Architecture
 
 ```
-frontend (React + Vite + TS)  ──REST──▶  backend (FastAPI)
-                                            ├── llm/      Gemini → Groq → Copilot
-                                            ├── resume/   parse → tailor → ATS score → LaTeX/PDF
-                                            ├── outreach/ messages → SMTP send → jobs (scraper)
-                                            │              └── email_finder/ crawl → verify → rank
-                                            └── SQLite (SQLAlchemy)
+frontend (React)  ──REST──▶  API process (FastAPI, `career-agent api`)
+                               │  answers requests, validates, queues work
+                               ▼
+                     SQLite (WAL) ── tasks · events · llm_calls · system_state · app data
+                               ▲
+                     worker process (`career-agent worker`)
+                        runs tasks: tailor · send_email · linkedin_batch · enrich_emails
+                        schedules:  daily backup · job fetch + match digest
+                        heartbeat · retries with backoff · requeues work after a crash
+
+  llm/       Gemini → Groq → Copilot (paid, daily budget), every call in the usage ledger
+  resume/    parse → tailor (fact-locked) → ATS score → LaTeX/PDF · read-back · scan
+  outreach/  jobs (scrapers) → match → messages → send rules (cap, quiet hours)
+  system/    event log · persisted state · backups
 ```
+
+## Running it as a system
+
+| Command | What it does |
+| --- | --- |
+| `./run.sh` | Development: API (auto-reload) + worker + Vite UI on :5173 |
+| `./run.sh --prod` | Production: builds the UI, then API serving it on :8000 + worker |
+| `career-agent worker` | The background worker (sends, tailoring, schedules, backups) |
+| `career-agent backup` | Back up now (database + uploaded resumes, newest 14 kept) |
+| `career-agent health` | Health as JSON; exit code 1 when degraded (for monitoring) |
+| `scripts/install-macos-service.sh` | Optional: run API + worker on login, restart on crash (launchd) |
+
+**Reliability.** Everything slow or outward-facing is a durable task: it survives
+API reloads and crashes (a dead worker's tasks are requeued on start), retries
+with exponential backoff, and a dedupe key makes double-clicks harmless.
+
+**Safety rails.** A pause switch (System page) holds every email and LinkedIn DM
+in the queue. Sends are paced (`CAREER_SMTP__PER_MINUTE`), capped per day
+(`CAREER_SMTP__DAILY_CAP`, overflow goes out the next morning), kept out of
+`CAREER_SMTP__QUIET_HOURS`, and never repeated to the same recruiter unless
+allowed.
+
+**Cost control.** Every AI call is recorded (provider, model, latency, tokens,
+Copilot credits). Copilot stops for the day at
+`CAREER_LLM__COPILOT_DAILY_CREDIT_BUDGET`, and falling back onto the paid
+provider raises an activity alert.
+
+**Audit and data.** The System page shows health, tasks (retry/cancel), AI
+usage, backups and an activity log of every send, rewrite, status change and
+failure. SQLite runs in WAL mode; schema changes are numbered migrations
+(`app/db.py`); backups run daily.
+
+**Security.** The API refuses to listen beyond localhost unless
+`CAREER_API_TOKEN` is set, and then requires it on every `/api` call (the UI
+asks for it once). Resume data is stored unencrypted on disk; rely on full-disk
+encryption (FileVault).
+
+**CI.** `.github/workflows/ci.yml` runs the backend tests and the frontend
+type-check/build on every push and pull request.
 
 ## Prerequisites
 
@@ -117,7 +164,22 @@ without sending).
    filled in. Generated emails use the job post as context and stay editable.
    Recruiters you've already emailed are skipped unless you tick *Allow
    repeats*. Do a test run first; real sending needs SMTP credentials.
-4. **Tracker**: one card per job, Saved → Applied → Contacted → Replied →
+4. **Quality checks** (on every version, and your original PDF):
+   - *What an ATS reads*: the PDF goes through three independent text
+     extractors (PyMuPDF, pdfminer.six, pypdf); missing or broken-apart words,
+     undecodable ligatures, section order, contact details and jumbled bullets
+     are reported, with the raw text each parser returns.
+   - *6-second scan*: an attention heatmap (F-pattern, emphasis, numbers) of
+     the ~90 words a skimming recruiter takes in first, which key skills land
+     there, and which are easy to miss. A heuristic, not eye-tracking data.
+   - *Requirements vs. your evidence*: the job post split into must-haves and
+     nice-to-haves, each matched to the resume lines that prove it (the AI can
+     only cite real lines), plus red flags such as "asks 10+ years, you have ~2".
+5. **Interview drill**: a skeptical interviewer asks one hard question per
+   claim (numbers first), grades your typed answer as defended / shaky / not
+   defended, gives the likely follow-up, and offers safer wording that claims
+   only what you could back up.
+6. **Tracker**: one card per job, Saved → Applied → Contacted → Replied →
    Interview → Offer (or Rejected), with notes, the resume version you used and
    emails sent. Tailoring for a job adds its card; a successful send moves it to
    Contacted (never backwards).

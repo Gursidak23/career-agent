@@ -425,6 +425,123 @@ class JobRefreshRequest(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# ATS read-back, recruiter scan, requirement evidence, interview drill
+# --------------------------------------------------------------------------- #
+class ExtractorResult(BaseModel):
+    name: str
+    score: int  # 0-100
+    word_coverage: float = 0.0
+    bullets_intact: float = 0.0
+    issues: list[str] = Field(default_factory=list)
+    preview: str = ""  # what this parser hands to an ATS
+
+
+class AtsCheckReport(BaseModel):
+    verdict: Literal["excellent", "good", "risky"]
+    score: int  # worst extractor
+    extractors: list[ExtractorResult]
+    notes: list[str] = Field(default_factory=list)
+
+
+class ScanReport(BaseModel):
+    seen_words: int
+    seen_text: str  # the text most likely read in the first 6 seconds
+    keywords_in_view: list[str] = Field(default_factory=list)
+    keywords_buried: list[str] = Field(default_factory=list)
+    metrics_in_view: int = 0
+    metrics_total: int = 0
+    tips: list[str] = Field(default_factory=list)
+
+
+class EvidenceLine(BaseModel):
+    id: int
+    where: str
+    text: str
+
+
+class Requirement(BaseModel):
+    text: str
+    kind: Literal["must", "nice"]
+    status: Literal["met", "partial", "gap"]
+    evidence: list[EvidenceLine] = Field(default_factory=list)
+    note: str = ""
+
+
+class RedFlag(BaseModel):
+    text: str
+    why: str = ""
+
+
+class EvidenceReport(BaseModel):
+    requirements: list[Requirement]
+    red_flags: list[RedFlag] = Field(default_factory=list)
+    must_met: int = 0
+    must_total: int = 0
+    nice_met: int = 0
+    nice_total: int = 0
+    years_required: int | None = None
+    years_candidate: float = 0.0
+
+
+class EvidenceRequest(BaseModel):
+    resume_id: int
+    tailoring_id: int | None = None  # analyze this version instead of the original
+    job_description: str | None = None
+    job_id: int | None = None  # use this posting's description
+
+
+class DrillClaim(BaseModel):
+    id: int
+    where: str
+    text: str
+
+
+class DrillQuestion(BaseModel):
+    claim_id: int
+    where: str
+    claim: str
+    question: str
+    look_for: list[str] = Field(default_factory=list)
+
+
+class DrillStart(BaseModel):
+    resume_id: int
+    tailoring_id: int | None = None
+    count: int = Field(6, ge=1, le=12)
+
+
+class DrillAnswer(BaseModel):
+    claim: str
+    question: str
+    look_for: list[str] = Field(default_factory=list)
+    answer: str
+
+
+class DrillGrade(BaseModel):
+    verdict: Literal["defended", "shaky", "undefended"]
+    score: int  # 1-5
+    feedback: str = ""
+    follow_up: str | None = None
+    safer_wording: str | None = None
+
+
+class TaskOut(BaseModel):
+    id: int
+    kind: str
+    status: str  # queued | running | succeeded | failed | cancelled
+    attempts: int = 0
+    max_attempts: int = 3
+    created_at: datetime
+    run_at: datetime | None = None
+    finished_at: datetime | None = None
+    progress: str | None = None
+    result: dict | None = None
+    error: str | None = None
+    outward: bool = False
+    summary: str = ""
+
+
+# --------------------------------------------------------------------------- #
 # Application tracker
 # --------------------------------------------------------------------------- #
 ApplicationStatus = Literal["saved", "applied", "contacted", "replied", "interview", "offer", "rejected"]
